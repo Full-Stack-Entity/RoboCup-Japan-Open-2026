@@ -1,0 +1,4 @@
+Dockerfile
+log/*
+build/*
+install/*
