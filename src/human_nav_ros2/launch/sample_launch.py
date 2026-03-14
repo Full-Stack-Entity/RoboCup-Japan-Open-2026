@@ -8,7 +8,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import AnyLaunchDescriptionSource
+from launch.substitutions import PathJoinSubstitution
 
 
 def generate_launch_description():
@@ -37,8 +38,12 @@ def generate_launch_description():
 
     # rosbridge_websocket（使用官方 launch.xml 并带标准参数）
     rosbridge_websocket = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            FindPackageShare("rosbridge_server").launch("rosbridge_websocket_launch.xml")
+        AnyLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare("rosbridge_server"),
+                "launch",
+                "rosbridge_websocket_launch.xml",
+            ])
         ),
         launch_arguments={
             "port": ros_bridge_port,
