@@ -2,3 +2,4 @@ Dockerfile
 log/*
 build/*
 install/*
+src_ros1/*
