@@ -27,7 +27,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <handyman/msg/handyman_msg.hpp>
+#include <handyman_ros2/msg/handyman_msg.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -35,7 +35,7 @@
 #include <stdio.h>
 #include <termios.h>
 
-using HandymanMsg = handyman::msg::HandymanMsg;
+using HandymanMsg = handyman_ros2::msg::HandymanMsg;
 
 // ---------------------------------------------------------------------------
 class HandymanTeleopKey : public rclcpp::Node

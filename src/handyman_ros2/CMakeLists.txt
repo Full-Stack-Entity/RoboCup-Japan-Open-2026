@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(handyman)
+project(handyman_ros2)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -64,6 +64,7 @@ ament_target_dependencies(teleop_key_handyman
   sensor_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
 )
 target_link_libraries(teleop_key_handyman "${cpp_typesupport_target}")
 
