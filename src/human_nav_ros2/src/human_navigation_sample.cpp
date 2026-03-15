@@ -272,34 +272,31 @@ private:
     double theta,
     double duration_sec)
   {
-    // 原 ROS1: listener_.canTransform("/odom", "/base_footprint", ros::Time(0))
-    // ROS2: 使用 tf2_ros::Buffer::canTransform + TimePointZero
-    if (!tf_buffer_ || !tf_buffer_->canTransform(
-                         "odom",
-                         "base_footprint",
-                         tf2::TimePointZero))
+    if (!tf_buffer_)
     {
       return;
     }
+    try
+    {
+      // 使用 TimePointZero 取“最新可用”的 TF，避免 nodeHandle->now() 领先于仿真 TF 导致 ExtrapolationException
+      if (!tf_buffer_->canTransform("odom", "base_footprint", tf2::TimePointZero))
+      {
+        return;
+      }
 
-    geometry_msgs::msg::PointStamped basefootprint_2_target;
-    geometry_msgs::msg::PointStamped odom_2_target;
-    basefootprint_2_target.header.frame_id = "base_footprint";
-    basefootprint_2_target.header.stamp    = nodeHandle->now();
-    basefootprint_2_target.point.x         = linear_x;
-    basefootprint_2_target.point.y         = linear_y;
+      geometry_msgs::msg::TransformStamped transform =
+        tf_buffer_->lookupTransform("odom", "base_footprint", tf2::TimePointZero);
 
-    // 原 ROS1: listener_.transformPoint("/odom", basefootprint_2_target, odom_2_target);
-    tf_buffer_->transform(basefootprint_2_target, odom_2_target, "odom");
+      geometry_msgs::msg::PointStamped basefootprint_2_target;
+      geometry_msgs::msg::PointStamped odom_2_target;
+      basefootprint_2_target.header.frame_id = "base_footprint";
+      basefootprint_2_target.header.stamp    = transform.header.stamp;  // 使用 TF 时间，避免外推
+      basefootprint_2_target.point.x         = linear_x;
+      basefootprint_2_target.point.y         = linear_y;
 
-    // 原 ROS1 还读取当前 yaw，这里保持注释中行为但 2025 版本中最终使用的是 theta
-    geometry_msgs::msg::TransformStamped transform =
-      tf_buffer_->lookupTransform("odom", "base_footprint", tf2::TimePointZero);
+      tf_buffer_->transform(basefootprint_2_target, odom_2_target, "odom");
 
-    // 可选: 从 transform 计算 yaw（当前代码不使用 yaw，只保留接口一致性）
-    (void)transform;  // 避免未使用警告，逻辑上与 ROS1 相同（最后使用 theta）
-
-    trajectory_msgs::msg::JointTrajectory joint_trajectory;
+      trajectory_msgs::msg::JointTrajectory joint_trajectory;
     joint_trajectory.joint_names.push_back("odom_x");
     joint_trajectory.joint_names.push_back("odom_y");
     joint_trajectory.joint_names.push_back("odom_t");
@@ -314,6 +311,39 @@ private:
 
     joint_trajectory.points.push_back(omni_joint_point);
     publisher->publish(joint_trajectory);
+    }
+    catch (const tf2::TransformException & e)
+    {
+      RCLCPP_DEBUG(
+        nodeHandle->get_logger(),
+        "moveBaseJointTrajectory: TF not available (%s), skipping.",
+        e.what());
+    }
+  }
+
+  // 将 target_object.name（如 empty_plastic_bottle_0）转为给受试者看的自然语言
+  static std::string getHumanReadableTargetName(const std::string & name)
+  {
+    if (name.find("empty_plastic_bottle") != std::string::npos)
+    {
+      return "an empty plastic bottle";
+    }
+    if (name.find("cup") != std::string::npos)
+    {
+      return "a cup";
+    }
+    // 默认：去掉末尾 _0/_1 等，下划线改空格，前加 "the "
+    std::string s = name;
+    while (s.size() > 0 && std::isdigit(static_cast<unsigned char>(s.back())))
+    {
+      s.pop_back();
+    }
+    if (s.size() > 0 && s.back() == '_')
+    {
+      s.pop_back();
+    }
+    std::replace(s.begin(), s.end(), '_', ' ');
+    return "the " + s;
   }
 
   // 下方 getFinalDestination/getInitialDestination/getFurnitureRelation 基本照搬 2025 逻辑
@@ -385,7 +415,13 @@ private:
     int   index_of_nearest_furniture = 0;
     float min_furniture_distance   = 999999999.0f;
 
-    for (int j = 0; j < i + 1; ++j)
+    if (i <= 0)
+    {
+      RCLCPP_WARN(nodeHandle->get_logger(), "getFinalDestination: no furniture, using default");
+      return "Place it at the designated destination.";
+    }
+
+    for (int j = 0; j < i; ++j)
     {
       float distance =
         std::sqrt(
@@ -458,7 +494,7 @@ private:
     std::string nearest_furniture_name = taskInfo.furniture[index_of_nearest_furniture].name;
     std::replace(nearest_furniture_name.begin(), nearest_furniture_name.end(), '_', ' ');
 
-    return "Place it in/on the" + nearest_furniture_name;
+    return "Place it in/on the " + nearest_furniture_name;
   }
 
   std::string getInitialDestination(
@@ -474,7 +510,12 @@ private:
     float min_distance               = 999999999.0f;
 
     int i = static_cast<int>(taskInfo.furniture.size());
-    for (int j = 0; j < i - 1; ++j)
+    if (i <= 0)
+    {
+      RCLCPP_WARN(nodeHandle->get_logger(), "getInitialDestination: no furniture");
+      return "Get " + getHumanReadableTargetName(targetObjectName) + ".";
+    }
+    for (int j = 0; j < i; ++j)
     {
       double fx = taskInfo.furniture[j].position.x;
       double fy = taskInfo.furniture[j].position.y;
@@ -499,7 +540,7 @@ private:
     float min_distance_non     = 999999999.0f;
 
     int k = static_cast<int>(taskInfo.non_target_objects.size());
-    for (int j = 0; j < k - 1; ++j)
+    for (int j = 0; j < k; ++j)
     {
       double fx = taskInfo.non_target_objects[j].position.x;
       double fy = taskInfo.non_target_objects[j].position.y;
@@ -517,16 +558,21 @@ private:
       }
     }
 
-    std::string nearest_non_target = taskInfo.non_target_objects[index_of_nearest_non].name;
-    std::replace(nearest_non_target.begin(), nearest_non_target.end(), '_', ' ');
-
-    if (min_distance_non < 0.4)
+    std::string readableTarget = getHumanReadableTargetName(targetObjectName);
+    std::string nearest_non_target =
+      (k > 0) ? taskInfo.non_target_objects[index_of_nearest_non].name : "";
+    if (!nearest_non_target.empty())
     {
-      return "Get the " + targetObjectName + ",close the " + nearest_furniture;
+      std::replace(nearest_non_target.begin(), nearest_non_target.end(), '_', ' ');
+    }
+
+    if (k > 0 && min_distance_non < 0.4)
+    {
+      return "Get " + readableTarget + ", close to the " + nearest_furniture;
     }
     else
     {
-      return "Get the " + targetObjectName + ", close to the " + nearest_furniture;
+      return "Get " + readableTarget + ", close to the " + nearest_furniture;
     }
   }
 
