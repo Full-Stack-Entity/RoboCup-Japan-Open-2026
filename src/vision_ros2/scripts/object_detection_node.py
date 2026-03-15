@@ -62,24 +62,40 @@ INDEX_TO_NAME = {idx: name for idx, name in enumerate(CLASS_NAMES)}
 
 # ---------------------------------------------------------------------------
 # Model loading
-# Bug fix: ROS2安装后脚本在 lib/rcup_vision/，模型应在 share/rcup_vision/models/
+# Bug fix: ROS2安装后脚本在 lib/vision_ros2/，模型应在 share/vision_ros2/models/
 # ---------------------------------------------------------------------------
 def _find_model_path() -> str:
+    model_name = 'last.pt'
+    fallback_name = 'yolo12n.pt'
+
     # 1. ament 包共享目录（ROS2 colcon install 路径）
     try:
         share_dir = get_package_share_directory('vision_ros2')
-        candidate = os.path.join(share_dir, 'models', 'last.pt')
+        models_dir = os.path.join(share_dir, 'models')
+        candidate = os.path.join(models_dir, model_name)
         if os.path.isfile(candidate):
             return candidate
+        fallback = os.path.join(models_dir, fallback_name)
+        if os.path.isfile(fallback):
+            return fallback
     except Exception:
-        pass
+        models_dir = None
+
     # 2. 脚本同层 ../models/（开发源码目录直接运行）
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidate  = os.path.normpath(os.path.join(script_dir, '..', 'models', 'last.pt'))
+    src_models = os.path.normpath(os.path.join(script_dir, '..', 'models'))
+    candidate = os.path.join(src_models, model_name)
     if os.path.isfile(candidate):
         return candidate
-    # 3. 回落到 yolo12n.pt（ultralytics 自动下载预训练权重）
-    return 'yolo12n.pt'
+    fallback = os.path.join(src_models, fallback_name)
+    if os.path.isfile(fallback):
+        return fallback
+
+    # 3. 回落：使用 share/models/ 或 src/models/ 作为下载目标路径
+    #    避免 ultralytics 将权重下载到当前工作目录
+    download_dir = models_dir or src_models
+    os.makedirs(download_dir, exist_ok=True)
+    return os.path.join(download_dir, fallback_name)
 
 MODEL_PATH = _find_model_path()
 model      = YOLO(MODEL_PATH)

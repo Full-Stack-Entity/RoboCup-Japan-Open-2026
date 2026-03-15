@@ -24,15 +24,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-
-# Generate custom messages
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/HandymanMsg.msg"
-  DEPENDENCIES std_msgs
-)
-rosidl_get_typesupport_target(cpp_typesupport_target
-  ${PROJECT_NAME} rosidl_typesupport_cpp)
+find_package(handyman_msgs REQUIRED)
 
 # handyman_sample executable
 add_executable(handyman_sample src/handyman_sample.cpp)
@@ -51,8 +43,8 @@ ament_target_dependencies(handyman_sample
   nav2_msgs
   action_msgs
   std_srvs
+  handyman_msgs
 )
-target_link_libraries(handyman_sample "${cpp_typesupport_target}")
 
 # teleop_key_handyman executable
 add_executable(teleop_key_handyman src/teleop_key_handyman.cpp)
@@ -65,8 +57,8 @@ ament_target_dependencies(teleop_key_handyman
   tf2
   tf2_ros
   tf2_geometry_msgs
+  handyman_msgs
 )
-target_link_libraries(teleop_key_handyman "${cpp_typesupport_target}")
 
 # Install executables
 install(TARGETS
@@ -90,12 +82,6 @@ install(DIRECTORY
 # Install maps
 install(DIRECTORY
   maps
-  DESTINATION share/${PROJECT_NAME}/
-)
-
-# Install msg
-install(DIRECTORY
-  msg
   DESTINATION share/${PROJECT_NAME}/
 )
 

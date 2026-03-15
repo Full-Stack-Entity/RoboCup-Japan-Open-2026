@@ -1,4 +1,4 @@
-# rcup_vision — ROS 2 Humble 移植版
+# vision_ros2 — ROS 2 Humble 移植版
 
 原稿（ROS1 Noetic + YOLOv8）完整移植到 ROS2 Humble，YOLO 升级为 YOLOv12。
 
@@ -50,12 +50,12 @@ sudo apt install -y \
 
 ```bash
 # 确保已复制包到工作空间
-pip3 install -r ~/ros2_ws/src/rcup_vision/requirements.txt
+pip3 install -r ~/ros2_ws/src/vision_ros2/requirements.txt
 ```
 
 国内加速：
 ```bash
-pip3 install -r ~/ros2_ws/src/rcup_vision/requirements.txt \
+pip3 install -r ~/ros2_ws/src/vision_ros2/requirements.txt \
   -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
@@ -73,25 +73,25 @@ pip3 install -r ~/ros2_ws/src/rcup_vision/requirements.txt \
 **放置位置：**
 
 ```bash
-~/ros2_ws/src/rcup_vision/models/last.pt
+~/ros2_ws/src/vision_ros2/models/last.pt
 ```
 
 **放置步骤：**
 
 ```bash
 # 将模型文件复制到 models 目录
-cp /path/to/your/trained_model.pt ~/ros2_ws/src/rcup_vision/models/last.pt
+cp /path/to/your/trained_model.pt ~/ros2_ws/src/vision_ros2/models/last.pt
 
 # 放置后必须重新编译，让 colcon 将模型安装到正确路径
 cd ~/ros2_ws
-colcon build --packages-select rcup_vision
+colcon build --packages-select vision_ros2
 source install/setup.bash
 ```
 
 **没有模型文件时的行为：**
 
 节点会自动回落到以下位置查找：
-1. `share/rcup_vision/models/last.pt`（colcon install 路径）
+1. `share/vision_ros2/models/last.pt`（colcon install 路径）
 2. 脚本同级 `../models/last.pt`（开发源码目录）
 3. 以上都不存在则自动下载 `yolo12n.pt` 预训练权重（需联网，检测精度低于自定义模型）
 
@@ -102,7 +102,7 @@ source install/setup.bash
 ```bash
 cd ~/ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select rcup_vision
+colcon build --packages-select vision_ros2
 source install/setup.bash
 ```
 
@@ -121,7 +121,7 @@ source install/setup.bash
 ### 单独运行视觉节点
 
 ```bash
-ros2 launch rcup_vision vision.launch.py
+ros2 launch vision_ros2 vision.launch.py
 ```
 
 ### 设置检测目标（另开终端）
@@ -259,7 +259,7 @@ A: 当前使用的模型精度取决于训练数据。可调低 `conf=0.1` 阈�
 ## 包结构
 
 ```
-vision-ros2/              （复制到工作空间时命名为 rcup_vision）
+vision-ros2/              （复制到工作空间时命名为 vision_ros2）
 ├── scripts/
 │   └── object_detection_node.py   # 主检测节点（YOLOv12，订阅3路相机，发布检测结果）
 ├── launch/

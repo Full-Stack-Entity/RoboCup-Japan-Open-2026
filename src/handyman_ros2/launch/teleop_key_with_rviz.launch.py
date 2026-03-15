@@ -57,7 +57,7 @@ def generate_launch_description():
     )
 
     vision_node = Node(
-        package='rcup_vision',
+        package='vision_ros2',
         executable='object_detection_node',
         name='vision',
         output='screen',

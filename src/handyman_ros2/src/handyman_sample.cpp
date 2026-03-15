@@ -21,7 +21,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
-#include <handyman_ros2/msg/handyman_msg.hpp>
+#include <handyman_msgs/msg/handyman_msg.hpp>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -39,7 +39,7 @@
 using namespace std::chrono_literals;
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
 using GoalHandleNav  = rclcpp_action::ClientGoalHandle<NavigateToPose>;
-using HandymanMsg    = handyman_ros2::msg::HandymanMsg;
+using HandymanMsg    = handyman_msgs::msg::HandymanMsg;
 
 std::string lower(const std::string &str) {
   std::string s = str;

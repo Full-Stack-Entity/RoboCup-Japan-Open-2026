@@ -1,8 +1,8 @@
-# handyman-ros2 — ROS 2 Humble 移植版
+# handyman_ros2 — ROS 2 Humble 移植版
 
 原稿（ROS1 Noetic）完整移植到 ROS2 Humble，包含 bug 修复。
 
-本包负责机器人主控逻辑，配合 `rcup_vision` 包使用。
+本包负责机器人主控逻辑，配合 `vision_ros2` 包使用。
 
 ---
 
@@ -40,25 +40,11 @@ python3 --version     # 应输出 Python 3.10.x 或更高
 
 ## 环境搭建（第一次必做）
 
-### 1. 创建工作空间
+### 1. 工作空间
 
-```bash
-mkdir -p ~/ros2_ws/src
-```
+本仓库即工作空间，包已位于 `src/handyman_ros2` 与 `src/vision_ros2`，无需额外复制。若从别处拷贝包，请保持包名 `handyman_ros2`、`vision_ros2`。
 
-### 2. 复制包到工作空间
-
-**注意：** 两个包的文件夹名称分别是 `handyman-ros2` 和 `rcup_vision`（vision 包），复制时要使用正确的名称。
-
-```bash
-# 根据实际存放路径修改源路径
-cp -r ~/Desktop/ros2改稿/handyman-ros2  ~/ros2_ws/src/handyman
-cp -r ~/Desktop/ros2改稿/vision-ros2    ~/ros2_ws/src/rcup_vision
-```
-
-> **重要：** 目标路径中 `handyman-ros2` 必须复制为 `handyman`，`vision-ros2` 必须复制为 `rcup_vision`，否则 ROS2 找不到包。
-
-### 3. 安装 ROS2 系统依赖
+### 2. 安装 ROS2 系统依赖
 
 ```bash
 sudo apt update
@@ -79,64 +65,26 @@ sudo apt install -y \
 > `python3-tf-transformations` — vision 包的 TF 坐标变换依赖。  
 > `xterm` — 键盘遥控节点需要在独立终端窗口中运行。
 
-### 4. 安装 Python 依赖
-
-```bash
-pip3 install -r ~/ros2_ws/src/rcup_vision/requirements.txt
-```
-
-国内加速：
-```bash
-pip3 install -r ~/ros2_ws/src/rcup_vision/requirements.txt \
-  -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
-
 ---
 
-## 编译
-
-```bash
-cd ~/ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build
-source install/setup.bash
-```
-
-编译成功标志：
-```
-Summary: 2 packages finished [handyman, rcup_vision]
-```
-
-> **每次修改代码后**都需要重新执行 `colcon build` 和 `source install/setup.bash`。
-
-建议将 source 命令加入 `~/.bashrc`，避免每次手动执行：
-
-```bash
-echo "source /opt/ros/humble/setup.bash"   >> ~/.bashrc
-echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
-source ~/.bashrc
-```
-
----
 
 ## 准备模型文件
 
-视觉检测需要 YOLOv12 模型文件，**必须手动放置**：
+视觉检测需要 YOLOv12 模型文件，**可手动放置**：
 
 ```bash
-# 将训练好的模型文件重命名为 last.pt，放到以下路径
-cp /path/to/your/model.pt ~/ros2_ws/src/rcup_vision/models/last.pt
+# 将训练好的模型文件重命名为 last.pt，放到 vision_ros2 的 models 目录
+cp /path/to/your/model.pt src/vision_ros2/models/last.pt
 ```
 
-放置后**重新编译**，让 colcon 把模型安装到正确位置：
+放置后**重新编译** vision_ros2，让 colcon 把模型安装到正确位置：
 
 ```bash
-cd ~/ros2_ws
-colcon build
+colcon build --symlink-install --packages-select vision_ros2
 source install/setup.bash
 ```
 
-如果没有模型文件，视觉节点会自动下载 `yolo12n.pt` 预训练权重（需联网），但检测精度会低于训练好的自定义模型。
+如果没有模型文件，视觉节点会自动下载 `yolo12n.pt` 预训练权重到 `models/`（需联网），但检测精度会低于训练好的自定义模型。
 
 ---
 
@@ -145,7 +93,7 @@ source install/setup.bash
 > **每次新开终端**都需要先执行（已加入 `~/.bashrc` 则无需手动执行）：
 > ```bash
 > source /opt/ros/humble/setup.bash
-> source ~/ros2_ws/install/setup.bash
+> source /path/to/RoboCup-Japan-Open-2026/install/setup.bash
 > ```
 
 ---
@@ -159,7 +107,7 @@ source install/setup.bash
 **终端 1 — 启动建图程序：**
 
 ```bash
-ros2 launch handyman make_map.launch.py
+ros2 launch handyman_ros2 make_map.launch.py
 ```
 
 启动后会弹出两个窗口：
@@ -173,21 +121,21 @@ ros2 launch handyman make_map.launch.py
 **终端 2 — 保存地图：**
 
 ```bash
-# 将地图保存到 handyman 包的 maps 目录，文件名与场地名一致
-ros2 run nav2_map_server map_saver_cli -f ~/ros2_ws/src/handyman/maps/MyMap
+# 将地图保存到 handyman_ros2 包的 maps 目录，文件名与场地名一致
+ros2 run nav2_map_server map_saver_cli -f /path/to/RoboCup-Japan-Open-2026/src/handyman_ros2/maps/MyMap
 ```
 
 会生成两个文件：`MyMap.pgm`（地图图像）和 `MyMap.yaml`（地图配置）。
 
 **注册新地图（修改代码）：**
 
-打开 `handyman-ros2/src/handyman_sample.cpp`，找到 `registerDefaultEnvironments()` 函数，添加新地图：
+打开 `src/handyman_ros2/src/handyman_sample.cpp`，找到 `registerDefaultEnvironments()` 函数，添加新地图：
 
 ```cpp
 void registerDefaultEnvironments() {
     geometry_msgs::msg::Pose p;
     p.orientation.w = 1.0;
-    std::string base = ament_index_cpp::get_package_share_directory("handyman") + "/maps/";
+    std::string base = ament_index_cpp::get_package_share_directory("handyman_ros2") + "/maps/";
     // 已有的地图
     registerEnvironment("2019HM01", base + "2019HM01.yaml", p);
     // 添加新地图（环境名需与仿真器发送的 Environment 消息一致）
@@ -198,7 +146,7 @@ void registerDefaultEnvironments() {
 修改后**重新编译**：
 
 ```bash
-cd ~/ros2_ws && colcon build && source install/setup.bash
+cd /path/to/RoboCup-Japan-Open-2026 && colcon build --symlink-install && source install/setup.bash
 ```
 
 ---
@@ -212,7 +160,7 @@ cd ~/ros2_ws && colcon build && source install/setup.bash
 **终端 2 — 启动 ROS2 程序：**
 
 ```bash
-ros2 launch handyman hsr_nav.launch.py
+ros2 launch handyman_ros2 hsr_nav.launch.py
 ```
 
 此命令同时启动以下 4 个节点：
@@ -241,13 +189,13 @@ ros2 launch handyman hsr_nav.launch.py
 **仅启动主控节点（不含视觉，用于调试）：**
 
 ```bash
-ros2 launch handyman handyman.launch.py
+ros2 launch handyman_ros2 handyman.launch.py
 ```
 
 **键盘遥控（手动操控机器人）：**
 
 ```bash
-ros2 launch handyman teleop_key.launch.py
+ros2 launch handyman_ros2 teleop_key.launch.py
 ```
 
 启动后会弹出 xterm 窗口，在该窗口中按键操作。详见 [键盘遥控说明](#键盘遥控说明)。
@@ -255,7 +203,7 @@ ros2 launch handyman teleop_key.launch.py
 **键盘遥控 + RViz2（带可视化）：**
 
 ```bash
-ros2 launch handyman teleop_key_with_rviz.launch.py
+ros2 launch handyman_ros2 teleop_key_with_rviz.launch.py
 ```
 
 ---
@@ -287,8 +235,8 @@ ros2 launch handyman teleop_key_with_rviz.launch.py
 
 ## 常见问题
 
-**Q: `colcon build` 报错 `package 'handyman' not found`**  
-A: 确认包已按正确名称复制：源目录 `handyman-ros2` 必须复制为 `~/ros2_ws/src/handyman`。
+**Q: `colcon build` 报错 `package 'handyman_ros2' not found`**  
+A: 在仓库根目录编译，确认 `src/handyman_ros2` 存在且包名在 `package.xml` 中为 `handyman_ros2`。
 
 **Q: `colcon build` 报错 `ament_index_cpp not found`**  
 A: 执行 `sudo apt install ros-humble-ament-index-cpp`。
@@ -297,7 +245,7 @@ A: 执行 `sudo apt install ros-humble-ament-index-cpp`。
 A: Nav2 初始化需要时间，正常等待 10~30 秒。如果超过 60 秒仍未就绪，检查 `nav2_params.yaml` 是否正确安装（执行 `colcon build` 后是否 source）。
 
 **Q: 视觉节点报错 `Model file not found` 或自动下载 yolo12n.pt**  
-A: 检查 `~/ros2_ws/src/rcup_vision/models/last.pt` 是否存在，且放置后需重新 `colcon build`。
+A: 检查 `src/vision_ros2/models/last.pt` 是否存在，且放置后需重新 `colcon build --packages-select vision_ros2`。
 
 **Q: RViz2 显示 `No map received`**  
 A: `hsr_nav.launch.py` 不负责启动 map_server，地图由 `handyman_sample` 在收到 Environment 消息后通过 `LoadMapManager` 动态加载。若未收到 Environment 消息，地图不会加载。
@@ -309,14 +257,14 @@ A: 确认 `rosbridge_websocket` 已启动（端口默认 9090），SIGVerse 中�
 A: 确认已安装 xterm：`sudo apt install xterm`。
 
 **Q: 每次新开终端命令找不到**  
-A: 执行 `source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash`，或参考[编译](#编译)章节把这两行加入 `~/.bashrc`。
+A: 执行 `source /opt/ros/humble/setup.bash && source /path/to/RoboCup-Japan-Open-2026/install/setup.bash`，或参考[编译](#编译)章节把这两行加入 `~/.bashrc`。
 
 ---
 
 ## 包结构
 
 ```
-handyman-ros2/          （复制到工作空间时命名为 handyman）
+src/handyman_ros2/
 ├── src/
 │   ├── handyman_sample.cpp         # 主状态机节点
 │   └── teleop_key_handyman.cpp     # 键盘遥控节点
@@ -334,7 +282,7 @@ handyman-ros2/          （复制到工作空间时命名为 handyman）
 ├── param/
 │   └── nav2_params.yaml            # Nav2 导航参数（DWB规划器）
 ├── msg/
-│   └── HandymanMsg.msg             # 自定义消息（message + detail 字段）
+│   └── HandymanMsg.msg             # 消息定义已迁至 handyman_msgs 依赖包，此处可保留作参考
 ├── CMakeLists.txt
 └── package.xml
 ```

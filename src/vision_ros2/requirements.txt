@@ -1,4 +1,4 @@
-# requirements.txt — rcup_vision  (ROS 2 Humble / YOLOv12)
+# requirements.txt — vision_ros2  (ROS 2 Humble / YOLOv12)
 #
 # YOLOv12 is distributed via the ultralytics package (>=8.3.0).
 # Install with:  pip install -r requirements.txt

@@ -7,6 +7,7 @@ find_package(rclpy REQUIRED)
 install(PROGRAMS
   scripts/object_detection_node.py
   DESTINATION lib/${PROJECT_NAME}
+  RENAME object_detection_node
 )
 
 install(DIRECTORY

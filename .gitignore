@@ -2,4 +2,10 @@ Dockerfile
 log/*
 build/*
 install/*
-src_ros1/*
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# model weights
+*.pt
