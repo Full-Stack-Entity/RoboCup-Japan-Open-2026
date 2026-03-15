@@ -19,12 +19,8 @@ def generate_launch_description():
             default_value='/handyman/message/to_robot'),
         DeclareLaunchArgument('pub_msg_to_moderator_topic_name',
             default_value='/handyman/message/to_moderator'),
-        DeclareLaunchArgument('sub_joint_state_topic_name',
-            default_value='/hsrb/joint_states'),
         DeclareLaunchArgument('pub_base_twist_topic_name',
             default_value='/hsrb/command_velocity'),
-        DeclareLaunchArgument('pub_base_trajectory_topic_name',
-            default_value='/hsrb/omni_base_controller/command'),
         DeclareLaunchArgument('pub_arm_trajectory_topic_name',
             default_value='/hsrb/arm_trajectory_controller/command'),
         DeclareLaunchArgument('pub_gripper_trajectory_topic_name',
@@ -49,8 +45,6 @@ def generate_launch_description():
                 LaunchConfiguration('pub_msg_to_moderator_topic_name'),
             'pub_base_twist_topic_name':
                 LaunchConfiguration('pub_base_twist_topic_name'),
-            'pub_base_trajectory_topic_name':
-                LaunchConfiguration('pub_base_trajectory_topic_name'),
             'pub_arm_trajectory_topic_name':
                 LaunchConfiguration('pub_arm_trajectory_topic_name'),
             'pub_gripper_trajectory_topic_name':

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>handyman_ros2</name>
+  <name>handyman</name>
   <version>0.1.0</version>
   <description>Handyman package - ROS2 Humble migration</description>
 
@@ -13,7 +13,7 @@
 
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
-  <depend>rclpy</depend>
+  <depend>ament_index_cpp</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>trajectory_msgs</depend>
