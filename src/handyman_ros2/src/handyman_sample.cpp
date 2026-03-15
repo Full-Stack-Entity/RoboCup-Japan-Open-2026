@@ -21,7 +21,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
-#include <handyman/msg/handyman_msg.hpp>
+#include <handyman_ros2/msg/handyman_msg.hpp>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -39,7 +39,7 @@
 using namespace std::chrono_literals;
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
 using GoalHandleNav  = rclcpp_action::ClientGoalHandle<NavigateToPose>;
-using HandymanMsg    = handyman::msg::HandymanMsg;
+using HandymanMsg    = handyman_ros2::msg::HandymanMsg;
 
 std::string lower(const std::string &str) {
   std::string s = str;
@@ -196,11 +196,11 @@ private:
     // Bug fix: 用 ament_index 动态查找包的 share 路径，避免硬编码安装路径
     std::string base;
     try {
-      base = ament_index_cpp::get_package_share_directory("handyman") + "/maps/";
+      base = ament_index_cpp::get_package_share_directory("handyman_ros2") + "/maps/";
     } catch (const std::exception &e) {
       RCLCPP_ERROR(node_->get_logger(),
         "Failed to find handyman package share directory: %s", e.what());
-      base = "/home/robot/ros2_ws/install/handyman/share/handyman/maps/"; // fallback
+      base = "/home/robot/ros2_ws/install/handyman_ros2/share/handyman_ros2/maps/"; // fallback
     }
     registerEnvironment("2019HM01", base + "2019HM01.yaml", p);
     registerEnvironment("2019HM02", base + "2019HM02.yaml", p);

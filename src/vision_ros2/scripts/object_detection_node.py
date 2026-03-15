@@ -67,7 +67,7 @@ INDEX_TO_NAME = {idx: name for idx, name in enumerate(CLASS_NAMES)}
 def _find_model_path() -> str:
     # 1. ament 包共享目录（ROS2 colcon install 路径）
     try:
-        share_dir = get_package_share_directory('rcup_vision')
+        share_dir = get_package_share_directory('vision_ros2')
         candidate = os.path.join(share_dir, 'models', 'last.pt')
         if os.path.isfile(candidate):
             return candidate
