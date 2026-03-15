@@ -10,3 +10,4 @@ install/*
 # model weights
 *.pt
 model/*
+models/*
