@@ -905,10 +905,11 @@ public:
               direction_target_direction,
               5.0);
 
-            if (speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
-            {
-              isRequestReceived = false;
-            }
+            // 放置阶段发送“放到哪里”的指令（不能沿用 "Please Keep holding the Object"）
+            guideMsg = final_location;
+            // 直接发送一次，确保 Unity 立即显示，不依赖 TTS 状态
+            sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
+            isRequestReceived = false;
           }
 
           break;
