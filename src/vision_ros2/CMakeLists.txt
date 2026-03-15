@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(rcup_vision)
+project(vision_ros2)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclpy REQUIRED)

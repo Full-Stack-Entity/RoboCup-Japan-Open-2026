@@ -11,7 +11,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg = FindPackageShare('handyman')
+    pkg = FindPackageShare('handyman_ros2')
 
     args = [
         DeclareLaunchArgument('cmd_vel_topic',
