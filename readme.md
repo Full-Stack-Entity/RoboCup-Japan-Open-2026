@@ -133,11 +133,16 @@ sudo cmake --install .
 sudo ldconfig
 ```
 
-### 2. Python 依赖（vision_ros2 / Handyman 视觉）
+### 2. Python 依赖（vision_ros2 + rosbridge）
+
+`hsr_nav.launch.py` 会同时启动 **vision_ros2**（YOLOv12）和 **rosbridge_server**，两者均依赖若干 Python 包。推荐用 pixi 统一管理，避免与系统 ROS2 的 Python 冲突。
 
 **方式一：使用 pixi（推荐）**
 
-[pixi](https://pixi.sh/) 在项目根目录管理 Python 环境，与 ROS2 的 Python 版本（3.10）和 NumPy 版本（<2）对齐，避免与 `cv_bridge`、`rclpy` 冲突。
+[pixi](https://pixi.sh/) 在项目根目录管理 Python 环境，使用 Python 3.10 且 `numpy<2`，与 ROS Humble 的 `cv_bridge`、`rclpy` 兼容。`pixi.toml` 中已配置：
+
+- **vision_ros2**：`ultralytics`、`opencv-python`、`numpy`、`pillow`、`transforms3d`
+- **rosbridge_server**：`tornado`、`pymongo`（bson）、`cbor2`
 
 ```bash
 # 安装 pixi
@@ -148,10 +153,11 @@ cd /path/to/RoboCup-Japan-Open-2026
 pixi install
 ```
 
-运行 ROS2 时，先 source ROS2 与工作空间，再进入 pixi 环境：
+运行 `hsr_nav.launch.py` 时，**先** source ROS2 与工作空间，**再**进入 pixi 环境并执行 launch：
 
 ```bash
 cd /path/to/RoboCup-Japan-Open-2026
+source /opt/ros/humble/setup.bash   # 或 setup.zsh
 source install/setup.bash
 pixi shell
 ros2 launch handyman_ros2 hsr_nav.launch.py
@@ -159,11 +165,7 @@ ros2 launch handyman_ros2 hsr_nav.launch.py
 
 **方式二：系统 pip**
 
-```bash
-pip3 install -r src/vision_ros2/requirements.txt
-```
-
-需保证 Python 3.10 且 `numpy<2`，以兼容 ROS Humble 的 `cv_bridge`。
+若不用 pixi，需在系统 Python 3.10 下安装 vision 与 rosbridge 的依赖（如 `pip3 install -r src/vision_ros2/requirements.txt`，以及 `tornado`、`pymongo`、`cbor2`），并保证 `numpy<2`。
 
 ### 3. 编译工作空间
 
@@ -181,7 +183,11 @@ source install/setup.bash
 
 ```bash
 ros2 launch competition_test_tools handyman_sample_launch.xml
+```
+```bash
 ros2 launch competition_test_tools interactive_cleanup_sample_launch.xml
+```
+```bash
 ros2 launch competition_test_tools human_navigation_sample_launch.xml
 ```
 
@@ -189,14 +195,18 @@ ros2 launch competition_test_tools human_navigation_sample_launch.xml
 
 ```bash
 ros2 launch competition_test_tools teleop_handyman_launch.xml
+```
+```bash
 ros2 launch competition_test_tools teleop_interactive_cleanup_launch.xml
+```
+```bash
 ros2 launch competition_test_tools teleop_human_navigation_launch.xml
 ```
 
 **自建 Handyman 全栈（主控 + 视觉 + RViz2 + rosbridge）：**
 
 ```bash
-# 若使用 pixi：先 source ROS2 与 install/setup，再 pixi shell，然后：
+# 使用 pixi 时：先 source /opt/ros/humble/setup.bash、source install/setup.bash，再 pixi shell，然后：
 ros2 launch handyman_ros2 hsr_nav.launch.py
 ```
 
