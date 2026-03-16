@@ -12,12 +12,3 @@ numpy>=1.24.0
 
 # Image utilities
 Pillow>=9.5.0
-
-# TF transformations (replaces tf in ROS2)
-tf-transformations>=0.0.1
-
-# ROS2 Python client (installed via apt, listed for reference)
-# rclpy          # apt: ros-humble-rclpy
-# cv_bridge      # apt: ros-humble-cv-bridge
-# sensor_msgs    # apt: ros-humble-sensor-msgs
-# ament_index_python  # apt: ros-humble-ament-index-python

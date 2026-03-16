@@ -22,6 +22,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(cleanup_vision_ros2 REQUIRED)
 
 # Generate custom messages
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -47,6 +48,7 @@ ament_target_dependencies(interactive_cleanup_sample
   tf2_geometry_msgs
   nav2_msgs
   action_msgs
+  cleanup_vision_ros2
 )
 target_link_libraries(interactive_cleanup_sample "${cpp_typesupport_target}")
 
