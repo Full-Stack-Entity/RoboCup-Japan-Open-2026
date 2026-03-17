@@ -2,7 +2,7 @@
 """
 Full-stack launch for Interactive Cleanup:
   - interactive_cleanup_sample  (C++ controller)
-  - cleanup_detection_node      (Python vision: YOLO + MediaPipe)
+  - cleanup_detection_node      (Python vision: YOLO + PoseLandmarker)
   - sigverse_ros_bridge         (SIGVerse ↔ ROS 2)
   - rosbridge_websocket         (WebSocket bridge)
 """

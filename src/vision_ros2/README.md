@@ -46,23 +46,27 @@ sudo apt install -y \
   python3-tf-transformations
 ```
 
-### Python 依赖
+### Python 依赖（pixi）
 
 ```bash
-# 确保已复制包到工作空间
-pip3 install -r ~/ros2_ws/src/vision_ros2/requirements.txt
-```
-
-国内加速：
-```bash
-pip3 install -r ~/ros2_ws/src/vision_ros2/requirements.txt \
-  -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 在工作空间根目录安装 Python 依赖
+cd ~/ros2_ws
+pixi install
 ```
 
 主要依赖：
 - `ultralytics>=8.3.0` — YOLOv12 推理框架
 - `opencv-python>=4.8.0` — 图像处理
-- `tf-transformations>=0.0.1` — 坐标变换
+- `numpy>=1.24,<2` — 与 ROS Humble 兼容的数值库
+
+运行节点时，先 `source` ROS 与工作空间，再进入 `pixi shell`：
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+pixi shell
+```
 
 ---
 
@@ -93,7 +97,8 @@ source install/setup.bash
 节点会自动回落到以下位置查找：
 1. `share/vision_ros2/models/last.pt`（colcon install 路径）
 2. 脚本同级 `../models/last.pt`（开发源码目录）
-3. 以上都不存在则自动下载 `yolo12n.pt` 预训练权重（需联网，检测精度低于自定义模型）
+3. `share/vision_ros2/models/yolo12n.pt` 或源码目录中的 `yolo12n.pt`
+4. 以上都不存在则尝试在线下载 `yolo12n.pt` 预训练权重（需联网，检测精度低于自定义模型）
 
 ---
 
@@ -237,7 +242,7 @@ handyman 用 `w >= 450` 判断是否足够近可以抓取。
 A: 执行 `sudo apt install ros-humble-cv-bridge`。
 
 **Q: 报错 `No module named 'tf_transformations'`**  
-A: 执行 `sudo apt install python3-tf-transformations` 或 `pip3 install tf-transformations`。
+A: 执行 `sudo apt install python3-tf-transformations`。
 
 **Q: 节点启动后没有检测结果输出**  
 A: 检查以下几点：
@@ -270,5 +275,5 @@ vision-ros2/              （复制到工作空间时命名为 vision_ros2）
 │   └── last.pt                    # 放置训练好的 YOLO 模型（需手动添加）
 ├── CMakeLists.txt
 ├── package.xml
-└── requirements.txt               # Python 依赖列表
+└── README.md
 ```

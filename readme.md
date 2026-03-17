@@ -14,7 +14,7 @@
 
 ## 目录结构
 
-以下为仓库中**受版本控制**的目录与文件，不包含 `.gitignore` 中忽略的 `build/`、`install/`、`log/`、`.pixi/`、`*.pt` 等。
+以下为仓库中**受版本控制**的目录与文件，不包含 `.gitignore` 中忽略的 `build/`、`install/`、`log/`、`.pixi/`、`*.pt`、`*.task` 等。
 
 ```
 RoboCup-Japan-Open-2026/
@@ -48,9 +48,9 @@ RoboCup-Japan-Open-2026/
 | Package                    | 说明                                                    |
 | -------------------------- | ----------------------------------------------------- |
 | `handyman_ros2`            | Handyman 任务控制器（主控状态机、键盘遥控），依赖 `vision_ros2` 做物体检测     |
-| `vision_ros2`              | Handyman 视觉模块（YOLOv12，ultralytics），需 Python 依赖（见环境配置） |
+| `vision_ros2`              | Handyman 视觉模块（YOLOv12，ultralytics），Python 依赖统一由 `pixi` 管理 |
 | `human_nav_ros2`           | Human Navigation 任务控制器                                |
-| `interactive_cleanup_ros2` | Interactive Cleanup 任务控制器                             |
+| `interactive_cleanup_ros2` | Interactive Cleanup 任务控制器，依赖 `cleanup_vision_ros2` 的视觉结果 |
 
 
 ### 官方 Package
@@ -103,7 +103,7 @@ RoboCup-Japan-Open-2026/
 ```bash
 sudo rosdep init
 rosdep update
-sudo apt install -y git libncurses-dev python3-pip
+sudo apt install -y git libncurses-dev
 sudo apt install -y ros-$ROS_DISTRO-rosbridge-suite
 sudo apt install -y ros-$ROS_DISTRO-slam-toolbox
 sudo apt install -y ros-$ROS_DISTRO-xacro ros-$ROS_DISTRO-octomap
@@ -133,15 +133,14 @@ sudo cmake --install .
 sudo ldconfig
 ```
 
-### 2. Python 依赖（vision_ros2 + rosbridge）
+### 2. Python 依赖（vision_ros2 + cleanup_vision_ros2 + rosbridge）
 
-`hsr_nav.launch.py` 会同时启动 **vision_ros2**（YOLOv12）和 **rosbridge_server**，两者均依赖若干 Python 包。推荐用 pixi 统一管理，避免与系统 ROS2 的 Python 冲突。
-
-**方式一：使用 pixi（推荐）**
+仓库中的 Python 依赖统一由 `pixi` 管理，避免与系统 ROS 2 Python 冲突。`handyman_ros2`、`cleanup_vision_ros2` 与 `rosbridge_server` 使用的第三方包都已在根目录 `pixi.toml` 中声明。
 
 [pixi](https://pixi.sh/) 在项目根目录管理 Python 环境，使用 Python 3.10 且 `numpy<2`，与 ROS Humble 的 `cv_bridge`、`rclpy` 兼容。`pixi.toml` 中已配置：
 
 - **vision_ros2**：`ultralytics`、`opencv-python`、`numpy`、`pillow`、`transforms3d`
+- **cleanup_vision_ros2**：`mediapipe`（Tasks API）
 - **rosbridge_server**：`tornado`、`pymongo`（bson）、`cbor2`
 
 ```bash
@@ -163,9 +162,10 @@ pixi shell
 ros2 launch handyman_ros2 hsr_nav.launch.py
 ```
 
-**方式二：系统 pip**
+`pixi` 只管理 Python 包本身，不会下载比赛所需的运行时模型资产。请手动准备以下文件：
 
-若不用 pixi，需在系统 Python 3.10 下安装 vision 与 rosbridge 的依赖（如 `pip3 install -r src/vision_ros2/requirements.txt`，以及 `tornado`、`pymongo`、`cbor2`），并保证 `numpy<2`。
+- `src/vision_ros2/models/last.pt` 或 `src/vision_ros2/models/yolo12n.pt`
+- `src/cleanup_vision_ros2/models/pose_landmarker.task`
 
 ### 3. 编译工作空间
 

@@ -6,7 +6,8 @@ RoboCup@Home Simulation — **Interactive Cleanup** 任务控制器（ROS 2 Humb
 
 - ROS 2 Humble
 - 工作空间已编译：`cleanup_vision_ros2`、`interactive_cleanup`、`sigverse_ros_bridge`
-- 全栈启动还需：Python 依赖（含 `cleanup_vision_ros2` 的 ultralytics、mediapipe 等），建议使用项目根目录的 pixi 环境
+- 全栈启动还需：根目录 `pixi.toml` 中声明的 Python 依赖
+- `cleanup_vision_ros2` 的运行时模型资产需手动准备，至少包括 `src/cleanup_vision_ros2/models/pose_landmarker.task`
 
 ## 启动方式
 
@@ -17,7 +18,7 @@ RoboCup@Home Simulation — **Interactive Cleanup** 任务控制器（ROS 2 Humb
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-# 若使用 pixi 管理 Python 依赖，先进入：pixi shell
+pixi shell
 ros2 launch interactive_cleanup cleanup.launch.py
 ```
 

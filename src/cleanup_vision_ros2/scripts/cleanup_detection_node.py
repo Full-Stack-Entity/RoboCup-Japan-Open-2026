@@ -5,7 +5,7 @@ cleanup_detection_node.py — Interactive Cleanup Vision Node (ROS 2 Humble)
 Provides two capabilities for the Interactive Cleanup competition:
   1. Object detection via YOLO (COCO pretrained or custom weights)
      with depth-based 3D localization.
-  2. Avatar pointing direction estimation via MediaPipe Pose.
+  2. Avatar pointing direction estimation via MediaPipe PoseLandmarker.
 
 Published topics:
   /cleanup_vision/detected_objects   (cleanup_vision_ros2/DetectedObjectArray)
@@ -14,9 +14,9 @@ Published topics:
 
 Subscribed topics:
   /hsrb/head_rgbd_sensor/rgb/image_raw               (sensor_msgs/Image)
-  /hsrb/head_rgbd_sensor/depth_registered/image_raw   (sensor_msgs/Image)
-  /hsrb/head_rgbd_sensor/rgb/camera_info              (sensor_msgs/CameraInfo)
-  /cleanup_vision/enable                              (std_msgs/Bool)
+  /hsrb/head_rgbd_sensor/depth_registered/image_raw  (sensor_msgs/Image)
+  /hsrb/head_rgbd_sensor/rgb/camera_info             (sensor_msgs/CameraInfo)
+  /cleanup_vision/enable                             (std_msgs/Bool)
 """
 
 import os
@@ -37,13 +37,23 @@ from cv_bridge import CvBridge
 import tf2_ros
 from tf_transformations import euler_from_quaternion, quaternion_matrix
 
+from ament_index_python.packages import get_package_share_directory
 from ultralytics import YOLO
 
 try:
     import mediapipe as mp
-    HAS_MEDIAPIPE = True
-except ImportError:
-    HAS_MEDIAPIPE = False
+    from mediapipe.tasks.python import vision as mp_vision
+    from mediapipe.tasks.python.core.base_options import BaseOptions
+    from mediapipe.tasks.python.vision.core.vision_task_running_mode import (
+        VisionTaskRunningMode,
+    )
+    HAS_MEDIAPIPE_TASKS = True
+except (ImportError, AttributeError):
+    mp = None
+    mp_vision = None
+    BaseOptions = None
+    VisionTaskRunningMode = None
+    HAS_MEDIAPIPE_TASKS = False
 
 from cleanup_vision_ros2.msg import (
     DetectedObject,
@@ -60,24 +70,78 @@ DEPTH_CAM_TOPIC = '/hsrb/head_rgbd_sensor/depth_registered/image_raw'
 CAMERA_INFO_TOPIC = '/hsrb/head_rgbd_sensor/rgb/camera_info'
 
 
-def _find_model_path() -> str:
-    """Locate YOLO weights: custom → COCO pretrained → auto-download."""
+def _source_models_dir(package_name: str) -> str:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    src_root = os.path.normpath(os.path.join(script_dir, '..', '..'))
+    return os.path.join(src_root, package_name, 'models')
+
+
+def _share_models_dir(package_name: str):
     try:
-        from ament_index_python.packages import get_package_share_directory
-        models_dir = os.path.join(
-            get_package_share_directory('cleanup_vision_ros2'), 'models')
+        return os.path.join(get_package_share_directory(package_name), 'models')
     except Exception:
-        models_dir = os.path.normpath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         '..', 'models'))
+        return None
+
+
+def _unique_dirs(*dirs):
+    seen = set()
+    ordered = []
+    for directory in dirs:
+        if not directory:
+            continue
+        norm = os.path.normpath(directory)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(norm)
+    return ordered
+
+
+def _find_yolo_model_path() -> str:
+    """Locate YOLO weights in cleanup_vision_ros2 first, then vision_ros2."""
+    model_dirs = _unique_dirs(
+        _share_models_dir('cleanup_vision_ros2'),
+        _source_models_dir('cleanup_vision_ros2'),
+        _share_models_dir('vision_ros2'),
+        _source_models_dir('vision_ros2'),
+    )
 
     for name in ('cleanup_model.pt', 'last.pt', 'yolo12n.pt'):
-        path = os.path.join(models_dir, name)
-        if os.path.isfile(path):
-            return path
+        for model_dir in model_dirs:
+            path = os.path.join(model_dir, name)
+            if os.path.isfile(path):
+                return path
 
-    os.makedirs(models_dir, exist_ok=True)
-    return os.path.join(models_dir, 'yolo12n.pt')
+    preferred_dir = model_dirs[0] if model_dirs else _source_models_dir(
+        'cleanup_vision_ros2')
+    os.makedirs(preferred_dir, exist_ok=True)
+    return os.path.join(preferred_dir, 'yolo12n.pt')
+
+
+def _find_pose_model_path():
+    """Locate a local Pose Landmarker task bundle. No auto-download fallback."""
+    model_dirs = _unique_dirs(
+        _share_models_dir('cleanup_vision_ros2'),
+        _source_models_dir('cleanup_vision_ros2'),
+    )
+    model_names = (
+        'pose_landmarker.task',
+        'pose_landmarker_full.task',
+        'pose_landmarker_lite.task',
+        'pose_landmarker_heavy.task',
+    )
+
+    for name in model_names:
+        for model_dir in model_dirs:
+            path = os.path.join(model_dir, name)
+            if os.path.isfile(path):
+                return path
+    return None
+
+
+def _landmark_visibility(landmark) -> float:
+    visibility = getattr(landmark, 'visibility', None)
+    return float(visibility) if visibility is not None else 0.0
 
 
 class CleanupDetectionNode(Node):
@@ -124,30 +188,63 @@ class CleanupDetectionNode(Node):
             Image, '/cleanup_vision/debug_image', 1)
 
         # YOLO
-        model_path = _find_model_path()
-        self.model = YOLO(model_path)
-        self.coco_names = self.model.names
-        self.get_logger().info(f'YOLO model loaded: {model_path}')
+        self.model = None
+        self.coco_names = {}
+        try:
+            model_path = _find_yolo_model_path()
+            self.model = YOLO(model_path)
+            self.coco_names = self.model.names
+            self.get_logger().info(f'YOLO model loaded: {model_path}')
+        except Exception as exc:
+            self.get_logger().error(
+                f'Failed to initialize YOLO model: {exc}. '
+                'Object detection will remain disabled.')
 
-        # MediaPipe
+        # MediaPipe PoseLandmarker
         self.pose_detector = None
-        if HAS_MEDIAPIPE:
-            self.pose_detector = mp.solutions.pose.Pose(
-                static_image_mode=False,
-                model_complexity=1,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5,
-            )
-            self.get_logger().info('MediaPipe Pose initialized')
+        self.pose_timestamp_ms = 0
+        pose_model_path = _find_pose_model_path()
+        if HAS_MEDIAPIPE_TASKS and pose_model_path:
+            try:
+                options = mp_vision.PoseLandmarkerOptions(
+                    base_options=BaseOptions(model_asset_path=pose_model_path),
+                    running_mode=VisionTaskRunningMode.VIDEO,
+                    num_poses=1,
+                    min_pose_detection_confidence=0.5,
+                    min_pose_presence_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                    output_segmentation_masks=False,
+                )
+                self.pose_detector = mp_vision.PoseLandmarker.create_from_options(
+                    options)
+                self.get_logger().info(
+                    f'MediaPipe PoseLandmarker initialized: {pose_model_path}')
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'PoseLandmarker initialization failed: {exc}. '
+                    'Pointing estimation disabled.')
+        elif not HAS_MEDIAPIPE_TASKS:
+            self.get_logger().warn(
+                'MediaPipe Tasks unavailable — pointing estimation disabled')
         else:
             self.get_logger().warn(
-                'MediaPipe unavailable — pointing estimation disabled')
+                'PoseLandmarker model asset not found in '
+                'cleanup_vision_ros2/models/ — pointing estimation disabled')
 
         self._has_display = bool(os.environ.get('DISPLAY', ''))
         self.last_detect_time = self.get_clock().now()
         self.detect_interval_sec = 0.2  # 5 Hz
 
         self.get_logger().info('CleanupDetectionNode ready')
+
+    def destroy_node(self):
+        if self.pose_detector is not None:
+            try:
+                self.pose_detector.close()
+            except Exception:
+                pass
+            self.pose_detector = None
+        return super().destroy_node()
 
     # ------------------------------------------------------------------
     # Sensor callbacks
@@ -251,55 +348,102 @@ class CleanupDetectionNode(Node):
         if self.pose_detector is None:
             return None
 
-        results = self.pose_detector.process(
-            cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        now_ms = int(self.get_clock().now().nanoseconds / 1_000_000)
+        self.pose_timestamp_ms = max(self.pose_timestamp_ms + 1, now_ms)
+
+        try:
+            results = self.pose_detector.detect_for_video(
+                mp_image, self.pose_timestamp_ms)
+        except Exception as exc:
+            self.get_logger().warn(f'PoseLandmarker inference failed: {exc}')
+            return None
+
         if not results.pose_landmarks:
             return None
 
-        lm = results.pose_landmarks.landmark
         h, w = bgr.shape[:2]
+        best = None
+        best_score = -1.0
+        for lm in results.pose_landmarks:
+            def _arm_ext(s, e, wr):
+                vis = min(
+                    _landmark_visibility(lm[s]),
+                    _landmark_visibility(lm[e]),
+                    _landmark_visibility(lm[wr]),
+                )
+                if vis < 0.3:
+                    return None
+                shoulder_wrist = math.hypot(
+                    lm[wr].x - lm[s].x,
+                    lm[wr].y - lm[s].y,
+                )
+                elbow_wrist = math.hypot(
+                    lm[wr].x - lm[e].x,
+                    lm[wr].y - lm[e].y,
+                )
+                return shoulder_wrist, elbow_wrist, vis
 
-        def _arm_ext(s, e, wr):
-            if min(lm[s].visibility, lm[e].visibility, lm[wr].visibility) < 0.3:
-                return -1.0
-            return math.hypot(lm[wr].x - lm[s].x, lm[wr].y - lm[s].y)
+            left_arm = _arm_ext(_L_SHOULDER, _L_ELBOW, _L_WRIST)
+            right_arm = _arm_ext(_R_SHOULDER, _R_ELBOW, _R_WRIST)
+            if not left_arm and not right_arm:
+                continue
 
-        l_ext = _arm_ext(_L_SHOULDER, _L_ELBOW, _L_WRIST)
-        r_ext = _arm_ext(_R_SHOULDER, _R_ELBOW, _R_WRIST)
-        if max(l_ext, r_ext) < 0:
-            return None
+            if not right_arm or (left_arm and left_arm[0] >= right_arm[0]):
+                elbow, wrist, idx = _L_ELBOW, _L_WRIST, _L_INDEX
+                ext_score, forearm_score, arm_vis = left_arm
+            else:
+                elbow, wrist, idx = _R_ELBOW, _R_WRIST, _R_INDEX
+                ext_score, forearm_score, arm_vis = right_arm
 
-        if l_ext >= r_ext:
-            elbow, wrist, idx = _L_ELBOW, _L_WRIST, _L_INDEX
-        else:
-            elbow, wrist, idx = _R_ELBOW, _R_WRIST, _R_INDEX
+            wu, wv = lm[wrist].x * w, lm[wrist].y * h
+            index_vis = _landmark_visibility(lm[idx])
 
-        wu, wv = lm[wrist].x * w, lm[wrist].y * h
+            # Prefer fingertip direction, fall back to forearm direction.
+            if index_vis > 0.3:
+                pu, pv = lm[idx].x * w, lm[idx].y * h
+                conf = min(_landmark_visibility(lm[wrist]), index_vis)
+            else:
+                du = lm[wrist].x - lm[elbow].x
+                dv = lm[wrist].y - lm[elbow].y
+                if math.hypot(du, dv) < 1e-6:
+                    continue
+                pu, pv = wu + du * w * 0.75, wv + dv * h * 0.75
+                conf = min(
+                    _landmark_visibility(lm[wrist]),
+                    _landmark_visibility(lm[elbow]),
+                )
 
-        # Direction: prefer index-finger tip; fallback to wrist−elbow
-        if lm[idx].visibility > 0.3:
-            pu, pv = lm[idx].x * w, lm[idx].y * h
-            conf = min(lm[wrist].visibility, lm[idx].visibility)
-        else:
-            du = lm[wrist].x - lm[elbow].x
-            dv = lm[wrist].y - lm[elbow].y
-            pu, pv = wu + du * w * 0.5, wv + dv * h * 0.5
-            conf = min(lm[wrist].visibility, lm[elbow].visibility)
+            length = math.hypot(pu - wu, pv - wv)
+            if length < 1.0:
+                continue
 
-        length = math.hypot(pu - wu, pv - wv)
-        if length < 1.0:
+            score = (ext_score + forearm_score) * arm_vis * max(conf, 0.0)
+            candidate = {
+                'wu': wu,
+                'wv': wv,
+                'pu': pu,
+                'pv': pv,
+                'conf': conf,
+            }
+            if score > best_score:
+                best = candidate
+                best_score = score
+
+        if best is None:
             return None
 
         # 3D origin
         origin_3d = None
-        cam = self._pixel_to_cam3d(wu, wv)
+        cam = self._pixel_to_cam3d(best['wu'], best['wv'])
         if cam is not None:
             origin_3d = self._cam3d_to_odom(cam[0], cam[1], cam[2])
 
         # 3D direction
         dir_3d = None
         if origin_3d is not None:
-            cam_p = self._pixel_to_cam3d(pu, pv)
+            cam_p = self._pixel_to_cam3d(best['pu'], best['pv'])
             if cam_p is not None:
                 p3d = self._cam3d_to_odom(cam_p[0], cam_p[1], cam_p[2])
                 if p3d is not None:
@@ -311,8 +455,11 @@ class CleanupDetectionNode(Node):
                         dir_3d = (dx / norm, dy / norm, dz / norm)
 
         return {
-            'wu': wu, 'wv': wv, 'pu': pu, 'pv': pv,
-            'conf': conf,
+            'wu': best['wu'],
+            'wv': best['wv'],
+            'pu': best['pu'],
+            'pv': best['pv'],
+            'conf': best['conf'],
             'origin_3d': origin_3d,
             'dir_3d': dir_3d,
         }
@@ -334,45 +481,46 @@ class CleanupDetectionNode(Node):
         stamp = now.to_msg()
 
         # --- YOLO detection ---
-        preds = self.model.predict(bgr, conf=0.25, verbose=False)
-        boxes = preds[0].boxes
-
         obj_array = DetectedObjectArray()
         obj_array.header.stamp = stamp
         obj_array.header.frame_id = 'odom'
 
-        for box in boxes:
-            cls_id = int(box.cls[0].item())
-            cls_name = self.coco_names.get(cls_id, f'class_{cls_id}')
-            conf = float(box.conf[0].item())
-            cx, cy, bw, bh = [int(x) for x in box.xywh[0].tolist()]
-            x1, y1, x2, y2 = [int(x) for x in box.xyxy[0].tolist()]
+        if self.model is not None:
+            preds = self.model.predict(bgr, conf=0.25, verbose=False)
+            boxes = preds[0].boxes
 
-            obj = DetectedObject()
-            obj.class_name = cls_name
-            obj.confidence = conf
-            obj.bbox_cx = cx
-            obj.bbox_cy = cy
-            obj.bbox_w = bw
-            obj.bbox_h = bh
-            obj.has_3d_position = False
-            obj.depth_mm = 0.0
+            for box in boxes:
+                cls_id = int(box.cls[0].item())
+                cls_name = self.coco_names.get(cls_id, f'class_{cls_id}')
+                conf = float(box.conf[0].item())
+                cx, cy, bw, bh = [int(x) for x in box.xywh[0].tolist()]
+                x1, y1, x2, y2 = [int(x) for x in box.xyxy[0].tolist()]
 
-            cam = self._pixel_to_cam3d(cx, cy)
-            if cam is not None:
-                odom_pos = self._cam3d_to_odom(cam[0], cam[1], cam[2])
-                if odom_pos is not None:
-                    obj.position_3d = Point(
-                        x=odom_pos[0], y=odom_pos[1], z=odom_pos[2])
-                    obj.has_3d_position = True
-                    obj.depth_mm = cam[3]
+                obj = DetectedObject()
+                obj.class_name = cls_name
+                obj.confidence = conf
+                obj.bbox_cx = cx
+                obj.bbox_cy = cy
+                obj.bbox_w = bw
+                obj.bbox_h = bh
+                obj.has_3d_position = False
+                obj.depth_mm = 0.0
 
-            obj_array.objects.append(obj)
+                cam = self._pixel_to_cam3d(cx, cy)
+                if cam is not None:
+                    odom_pos = self._cam3d_to_odom(cam[0], cam[1], cam[2])
+                    if odom_pos is not None:
+                        obj.position_3d = Point(
+                            x=odom_pos[0], y=odom_pos[1], z=odom_pos[2])
+                        obj.has_3d_position = True
+                        obj.depth_mm = cam[3]
 
-            color = (255, 0, 0) if cls_name == 'person' else (0, 255, 0)
-            cv2.rectangle(bgr, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(bgr, f'{cls_name} {conf:.2f}', (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+                obj_array.objects.append(obj)
+
+                color = (255, 0, 0) if cls_name == 'person' else (0, 255, 0)
+                cv2.rectangle(bgr, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(bgr, f'{cls_name} {conf:.2f}', (x1, y1 - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
         self.objects_pub.publish(obj_array)
 
@@ -390,6 +538,7 @@ class CleanupDetectionNode(Node):
             pt_msg.point_pixel_x = float(info['pu'])
             pt_msg.point_pixel_y = float(info['pv'])
             pt_msg.confidence = float(info['conf'])
+            pt_msg.is_valid = True
 
             if info['origin_3d'] is not None:
                 pt_msg.origin = Point(
@@ -401,7 +550,6 @@ class CleanupDetectionNode(Node):
                     x=info['dir_3d'][0],
                     y=info['dir_3d'][1],
                     z=info['dir_3d'][2])
-                pt_msg.is_valid = True
 
             # Debug arrow on image
             ox, oy = int(info['wu']), int(info['wv'])
@@ -430,8 +578,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node.pose_detector:
-            node.pose_detector.close()
         node.destroy_node()
         rclpy.shutdown()
 
