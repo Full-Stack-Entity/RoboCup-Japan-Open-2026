@@ -2,10 +2,12 @@ Dockerfile
 log/*
 build/*
 install/*
+unity_reference/*
 
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+unsolved.md
 
 # model weights
 *.pt

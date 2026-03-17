@@ -15,7 +15,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
-#include <interactive_cleanup/msg/interactive_cleanup_msg.hpp>
+#include <interactive_cleanup_msgs/msg/interactive_cleanup_msg.hpp>
 #include <cleanup_vision_ros2/msg/detected_object_array.hpp>
 #include <cleanup_vision_ros2/msg/pointing_direction.hpp>
 
@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <algorithm>
+#include <sstream>
 
 using namespace std::chrono_literals;
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -47,8 +48,12 @@ public:
   int run()
   {
     // ---- Publishers ----
-    pub_msg_ = this->create_publisher<interactive_cleanup::msg::InteractiveCleanupMsg>(
+    pub_msg_ = this->create_publisher<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>(
         "/interactive_cleanup/message/to_moderator", 10);
+    pub_msg_human_ = this->create_publisher<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>(
+        "/interactive_cleanup/message/to_human", 10);
+    pub_hsr_msg_ = this->create_publisher<std_msgs::msg::String>(
+        "/hsrb/message/to_human", 10);
     pub_base_twist_ = this->create_publisher<geometry_msgs::msg::Twist>(
         "/hsrb/command_velocity", 10);
     pub_arm_trajectory_ = this->create_publisher<trajectory_msgs::msg::JointTrajectory>(
@@ -61,9 +66,12 @@ public:
         "/cleanup_vision/enable", 10);
 
     // ---- Subscribers ----
-    sub_msg_ = this->create_subscription<interactive_cleanup::msg::InteractiveCleanupMsg>(
+    sub_msg_ = this->create_subscription<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>(
         "/interactive_cleanup/message/to_robot", 100,
         std::bind(&InteractiveCleanupSample::messageCallback, this, std::placeholders::_1));
+    sub_hsr_msg_ = this->create_subscription<std_msgs::msg::String>(
+        "/hsrb/message/to_robot", 100,
+        std::bind(&InteractiveCleanupSample::hsrMessageCallback, this, std::placeholders::_1));
     sub_joint_state_ = this->create_subscription<sensor_msgs::msg::JointState>(
         "/hsrb/joint_states", 10,
         std::bind(&InteractiveCleanupSample::jointStateCallback, this, std::placeholders::_1));
@@ -162,16 +170,32 @@ private:
   const std::vector<HeadPose> SCAN_FORWARD = {
       { 0.0, -0.3}, { 0.0, -0.5}, { 0.2, -0.4}, {-0.2, -0.4}, { 0.0, 0.0},
   };
+  const std::vector<HeadPose> SCAN_LOCAL = {
+      { 0.0,  -0.25},
+      { 0.45, -0.25}, {-0.45, -0.25},
+      { 0.85, -0.25}, {-0.85, -0.25},
+      { 0.0,  -0.50},
+      { 0.45, -0.55}, {-0.45, -0.55},
+      { 0.85, -0.60}, {-0.85, -0.60},
+      { 0.0,  -0.70},
+  };
 
   // =========================================================================
   // Timeouts
   // =========================================================================
   static constexpr double TIMEOUT_WAIT_COMMAND = 120.0;
-  static constexpr double TIMEOUT_OBSERVE      =   5.0;
+  static constexpr double TIMEOUT_OBSERVE      =   9.0;
   static constexpr double TIMEOUT_MOVE         =  60.0;
   static constexpr double TIMEOUT_GRASP        =  30.0;
   static constexpr double TIMEOUT_RELEASE      =  30.0;
   static constexpr double TIMEOUT_WAIT_RESULT  =  60.0;
+  static constexpr double READY_ACK_RESEND_INTERVAL = 0.5;
+  static constexpr double POINTING_MAX_AGE_SEC =   1.5;
+  static constexpr double POINT_ALIGN_TIMEOUT  =   2.0;
+  static constexpr double POINT_ALIGN_ANGLE_THRESHOLD = 0.18;
+  static constexpr double POINT_REALIGN_THRESHOLD     = 0.28;
+  static constexpr double POINT_ALIGN_MAX_ANGULAR     = 0.45;
+  static constexpr int    MAX_POINT_ALIGN_RETRY = 0;
   static constexpr int    MAX_POINT_AGAIN      =   2;
 
   static constexpr double APPROACH_STOP_DIST   = 0.45;
@@ -191,11 +215,19 @@ private:
   bool received_yes_ = false;
   bool received_no_  = false;
 
-  rclcpp::Time state_enter_time_;
+  std::chrono::steady_clock::time_point state_enter_time_;
   bool state_timer_initialized_ = false;
   int sub_step_ = 0;
   int scan_index_ = 0;
   int point_again_count_ = 0;
+  int point_align_retry_count_ = 0;
+  bool ready_ack_sent_ = false;
+  std::chrono::steady_clock::time_point last_ready_ack_time_;
+  std::chrono::steady_clock::time_point last_pointing_recv_time_;
+  std::chrono::steady_clock::time_point observe_align_start_time_;
+  std::chrono::steady_clock::time_point observe_scan_start_time_;
+  bool observe_align_active_ = false;
+  bool observe_scan_active_ = false;
 
   // Joint state
   std::mutex joint_mutex_;
@@ -231,14 +263,17 @@ private:
   // =========================================================================
   // ROS handles
   // =========================================================================
-  rclcpp::Publisher<interactive_cleanup::msg::InteractiveCleanupMsg>::SharedPtr pub_msg_;
+  rclcpp::Publisher<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>::SharedPtr pub_msg_;
+  rclcpp::Publisher<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>::SharedPtr pub_msg_human_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_hsr_msg_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_base_twist_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_arm_trajectory_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_gripper_trajectory_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_head_trajectory_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_vision_enable_;
 
-  rclcpp::Subscription<interactive_cleanup::msg::InteractiveCleanupMsg>::SharedPtr sub_msg_;
+  rclcpp::Subscription<interactive_cleanup_msgs::msg::InteractiveCleanupMsg>::SharedPtr sub_msg_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_hsr_msg_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_state_;
   rclcpp::Subscription<DetectedObjectArray>::SharedPtr sub_detected_objects_;
   rclcpp::Subscription<PointingDirection>::SharedPtr   sub_pointing_;
@@ -250,26 +285,49 @@ private:
   // =========================================================================
   // Callbacks
   // =========================================================================
-  void messageCallback(const interactive_cleanup::msg::InteractiveCleanupMsg::SharedPtr msg)
+  void messageCallback(const interactive_cleanup_msgs::msg::InteractiveCleanupMsg::SharedPtr msg)
   {
-    RCLCPP_INFO(this->get_logger(), "Recv: '%s' detail='%s'",
-                msg->message.c_str(), msg->detail.c_str());
+    handleIncomingMessage(msg->message, msg->detail, "interactive_cleanup");
+  }
 
-    if (msg->message == MSG_ARE_YOU_READY) {
-      if (step_ == Ready) { is_started_ = true; }
-      else { emergencyStop(); step_ = Initialize; }
+  void hsrMessageCallback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    handleIncomingMessage(msg->data, "", "hsrb");
+  }
+
+  void handleIncomingMessage(
+    const std::string &message,
+    const std::string &detail,
+    const char *source)
+  {
+    RCLCPP_INFO(
+      this->get_logger(), "Recv[%s]: '%s' detail='%s'",
+      source, message.c_str(), detail.c_str());
+
+    if (message == MSG_ARE_YOU_READY) {
+      if (step_ == Ready) {
+        is_started_ = true;
+        sendReadyAck("initial handshake");
+      } else if (step_ == WaitForPickCommand) {
+        sendReadyAck("moderator retried handshake");
+      } else {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Ignoring unexpected Are_you_ready? while in [%s]",
+          stepName(step_).c_str());
+      }
     }
-    else if (msg->message == MSG_PICK_IT_UP)     { received_pick_command_ = true; }
-    else if (msg->message == MSG_CLEAN_UP)       { received_clean_command_ = true; }
-    else if (msg->message == MSG_YES)            { received_yes_ = true; }
-    else if (msg->message == MSG_NO)             { received_no_ = true; }
-    else if (msg->message == MSG_TASK_SUCCEEDED) { is_finished_ = true; }
-    else if (msg->message == MSG_TASK_FAILED) {
+    else if (message == MSG_PICK_IT_UP)     { received_pick_command_ = true; }
+    else if (message == MSG_CLEAN_UP)       { received_clean_command_ = true; }
+    else if (message == MSG_YES)            { received_yes_ = true; }
+    else if (message == MSG_NO)             { received_no_ = true; }
+    else if (message == MSG_TASK_SUCCEEDED) { is_finished_ = true; }
+    else if (message == MSG_TASK_FAILED) {
       is_failed_ = true;
-      failed_detail_ = msg->detail;
-      RCLCPP_WARN(this->get_logger(), "Task failed: '%s'", msg->detail.c_str());
+      failed_detail_ = detail;
+      RCLCPP_WARN(this->get_logger(), "Task failed: '%s'", detail.c_str());
     }
-    else if (msg->message == MSG_MISSION_COMPLETE) {
+    else if (message == MSG_MISSION_COMPLETE) {
       RCLCPP_INFO(this->get_logger(), "Mission complete!");
       emergencyStop();
       rclcpp::shutdown();
@@ -295,6 +353,7 @@ private:
   {
     latest_pointing_ = *msg;
     has_new_pointing_ = true;
+    last_pointing_recv_time_ = std::chrono::steady_clock::now();
     if (step_ == ObserveTarget || step_ == ObserveDestination)
       obs_pointings_.push_back(*msg);
   }
@@ -312,12 +371,35 @@ private:
   // =========================================================================
   // Message helpers
   // =========================================================================
-  void sendMessage(const std::string &message)
+  void sendMessage(const std::string &message, const std::string &detail = "")
   {
     RCLCPP_INFO(this->get_logger(), "Send: '%s'", message.c_str());
-    interactive_cleanup::msg::InteractiveCleanupMsg m;
+    interactive_cleanup_msgs::msg::InteractiveCleanupMsg m;
     m.message = message;
+    m.detail = detail;
     pub_msg_->publish(m);
+    pub_msg_human_->publish(m);
+
+    std_msgs::msg::String hsr_msg;
+    hsr_msg.data = message;
+    pub_hsr_msg_->publish(hsr_msg);
+  }
+
+  void sendReadyAck(const char *reason)
+  {
+    auto now_time = std::chrono::steady_clock::now();
+    if (ready_ack_sent_ &&
+        std::chrono::duration<double>(now_time - last_ready_ack_time_).count() <
+          READY_ACK_RESEND_INTERVAL) {
+      return;
+    }
+
+    if (reason != nullptr) {
+      RCLCPP_INFO(this->get_logger(), "Ack Are_you_ready?: %s", reason);
+    }
+    sendMessage(MSG_I_AM_READY);
+    ready_ack_sent_ = true;
+    last_ready_ack_time_ = now_time;
   }
 
   // =========================================================================
@@ -439,6 +521,54 @@ private:
   }
 
   /**
+   * Compute perpendicular distance from point (px,py,pz) to a 3D ray.
+   * Returns large value if behind the ray origin or if the direction is invalid.
+   */
+  static double pointRayDist3D(double px, double py, double pz,
+                               double ox, double oy, double oz,
+                               double dx, double dy, double dz,
+                               double *along = nullptr)
+  {
+    double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-6) return 9999.0;
+
+    dx /= len; dy /= len; dz /= len;
+    double vx = px - ox, vy = py - oy, vz = pz - oz;
+    double proj = vx * dx + vy * dy + vz * dz;
+    if (along != nullptr) { *along = proj; }
+    if (proj < 0.0) return 9999.0;
+
+    double perp_x = vx - proj * dx;
+    double perp_y = vy - proj * dy;
+    double perp_z = vz - proj * dz;
+    return std::sqrt(perp_x * perp_x + perp_y * perp_y + perp_z * perp_z);
+  }
+
+  static bool isLikelyPortableClass(const std::string &class_name)
+  {
+    static const std::vector<std::string> portable_classes = {
+      "bottle", "cup", "wine glass", "bowl", "book", "clock",
+      "vase", "teddy bear", "sports ball", "cell phone",
+      "remote", "toothbrush"
+    };
+    return std::find(
+      portable_classes.begin(), portable_classes.end(), class_name) !=
+      portable_classes.end();
+  }
+
+  static bool isLikelyDestinationClass(const std::string &class_name)
+  {
+    static const std::vector<std::string> destination_classes = {
+      "bench", "chair", "couch", "bed", "dining table", "potted plant",
+      "sink", "toilet", "refrigerator", "oven", "microwave", "tv",
+      "suitcase"
+    };
+    return std::find(
+      destination_classes.begin(), destination_classes.end(), class_name) !=
+      destination_classes.end();
+  }
+
+  /**
    * Select the target/destination from accumulated observations.
    * @param is_dest true → picking destination (prefer furniture classes)
    * @return true if a valid target was found
@@ -454,7 +584,11 @@ private:
       std::string name;
       double x, y, z;
       int votes;
-      double conf_sum;
+      double score_sum;
+      double best_ray3d;
+      double best_ray2d;
+      bool portable_like;
+      bool destination_like;
     };
     std::map<std::string, Candidate> cands;
 
@@ -477,20 +611,25 @@ private:
         if (obj.class_name == "person") continue;
         if (!obj.has_3d_position) continue;
 
-        if (is_dest) {
-          // Prefer furniture-like classes for destination
-          // (dining table, chair, bench, potted plant, etc.)
-          // but accept any non-person if nothing else available
-        }
-
-        double ray_d = 9999.0;
+        double ray_d_2d = 9999.0;
         if (pt && pt->is_valid) {
-          ray_d = pointRayDist2D(
+          ray_d_2d = pointRayDist2D(
             obj.bbox_cx, obj.bbox_cy,
             pt->wrist_pixel_x, pt->wrist_pixel_y,
             pt->point_pixel_x - pt->wrist_pixel_x,
             pt->point_pixel_y - pt->wrist_pixel_y);
         }
+
+        double ray_d_3d = 9999.0;
+        if (pt && pt->is_valid) {
+          ray_d_3d = pointRayDist3D(
+            obj.position_3d.x, obj.position_3d.y, obj.position_3d.z,
+            pt->origin.x, pt->origin.y, pt->origin.z,
+            pt->direction.x, pt->direction.y, pt->direction.z);
+        }
+
+        const bool portable_like = isLikelyPortableClass(obj.class_name);
+        const bool destination_like = isLikelyDestinationClass(obj.class_name);
 
         // Build a spatial key to avoid merging distant same-class objects
         std::string key = obj.class_name + "_" +
@@ -500,13 +639,53 @@ private:
         if (cands.find(key) == cands.end()) {
           cands[key] = {obj.class_name,
                         obj.position_3d.x, obj.position_3d.y, obj.position_3d.z,
-                        0, 0.0};
+                        0, 0.0, 9999.0, 9999.0,
+                        portable_like, destination_like};
         }
         auto &c = cands[key];
 
-        double vote_weight = (ray_d < 100.0) ? (1.0 / (1.0 + ray_d / 50.0)) : 0.1;
+        double semantic_weight = 1.0;
+        if (is_dest) {
+          if (destination_like) semantic_weight *= 1.8;
+          if (portable_like)    semantic_weight *= 0.25;
+
+          // Destinations should usually differ from the currently selected target
+          // and not be the same supporting furniture right next to it.
+          if (target_valid_) {
+            double dist_to_target = std::hypot(
+              obj.position_3d.x - target_position_.x,
+              obj.position_3d.y - target_position_.y);
+            if (dist_to_target < 0.8) { semantic_weight *= 0.35; }
+          }
+        } else {
+          if (portable_like)    semantic_weight *= 1.6;
+          if (destination_like) semantic_weight *= 0.15;
+
+          // Large detections are often support surfaces rather than graspable items.
+          int area = obj.bbox_w * obj.bbox_h;
+          if (area > 50000) { semantic_weight *= 0.6; }
+        }
+
+        double pointing_weight_3d = 0.7;
+        if (ray_d_3d < 9998.0) {
+          double scale = is_dest ? 0.8 : 0.45;
+          pointing_weight_3d = 1.0 / (1.0 + ray_d_3d / scale);
+          pointing_weight_3d *= 1.5;  // Prefer 3D-consistent candidates.
+        }
+
+        double pointing_weight_2d = 0.8;
+        if (ray_d_2d < 9998.0) {
+          double scale_px = is_dest ? 120.0 : 80.0;
+          pointing_weight_2d = 1.0 / (1.0 + ray_d_2d / scale_px);
+        }
+
+        double vote_weight =
+          semantic_weight * pointing_weight_3d * pointing_weight_2d;
+
         c.votes++;
-        c.conf_sum += obj.confidence * vote_weight;
+        c.score_sum += obj.confidence * vote_weight;
+        c.best_ray3d = std::min(c.best_ray3d, ray_d_3d);
+        c.best_ray2d = std::min(c.best_ray2d, ray_d_2d);
 
         // Running average of position
         double n = static_cast<double>(c.votes);
@@ -521,11 +700,41 @@ private:
       return false;
     }
 
+    bool has_good_3d_candidate = false;
+    bool has_non_destination_candidate = false;
+    bool has_destination_like_candidate = false;
+    for (const auto &[k, c] : cands) {
+      if (c.best_ray3d < (is_dest ? 0.8 : 0.45)) {
+        has_good_3d_candidate = true;
+      }
+      if (!c.destination_like) {
+        has_non_destination_candidate = true;
+      }
+      if (c.destination_like) {
+        has_destination_like_candidate = true;
+      }
+    }
+
     // Pick the candidate with highest weighted confidence sum
     const Candidate *best = nullptr;
     double best_score = -1.0;
     for (auto &[k, c] : cands) {
-      if (c.conf_sum > best_score) { best_score = c.conf_sum; best = &c; }
+      if (!is_dest && has_non_destination_candidate && c.destination_like) {
+        continue;
+      }
+      if (is_dest && has_destination_like_candidate &&
+          c.portable_like && !c.destination_like) {
+        continue;
+      }
+      if (has_good_3d_candidate &&
+          c.best_ray3d > (is_dest ? 1.2 : 0.7)) {
+        continue;
+      }
+
+      if (c.score_sum > best_score) {
+        best_score = c.score_sum;
+        best = &c;
+      }
     }
 
     if (!best) return false;
@@ -540,10 +749,57 @@ private:
     valid = true;
     cls   = best->name;
 
-    RCLCPP_INFO(this->get_logger(), "Selected %s: class='%s' pos=(%.2f, %.2f, %.2f) votes=%d",
+    RCLCPP_INFO(this->get_logger(),
+                "Selected %s: class='%s' pos=(%.2f, %.2f, %.2f) votes=%d ray3d=%.2f ray2d=%.1f score=%.3f",
                 is_dest ? "DESTINATION" : "TARGET",
-                cls.c_str(), pos.x, pos.y, pos.z, best->votes);
+                cls.c_str(), pos.x, pos.y, pos.z, best->votes,
+                best->best_ray3d, best->best_ray2d, best->score_sum);
     return true;
+  }
+
+  void logObservationSummary(const char *label) const
+  {
+    std::map<std::string, int> counts;
+    int total_objects = 0;
+    int total_objects_3d = 0;
+
+    for (const auto &frame : obs_objects_) {
+      for (const auto &obj : frame.objects) {
+        if (obj.class_name == "person") continue;
+        total_objects++;
+        if (obj.has_3d_position) {
+          total_objects_3d++;
+        }
+        counts[obj.class_name]++;
+      }
+    }
+
+    if (counts.empty()) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[%s] Observation summary: no non-person detections in %zu frames",
+                  label, obs_objects_.size());
+      return;
+    }
+
+    std::vector<std::pair<std::string, int>> ranked(counts.begin(), counts.end());
+    std::sort(
+      ranked.begin(), ranked.end(),
+      [](const auto &a, const auto &b) {
+        if (a.second != b.second) return a.second > b.second;
+        return a.first < b.first;
+      });
+
+    std::ostringstream oss;
+    const size_t limit = std::min<size_t>(ranked.size(), 8);
+    for (size_t i = 0; i < limit; ++i) {
+      if (i != 0) oss << ", ";
+      oss << ranked[i].first << ":" << ranked[i].second;
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+                "[%s] Observation summary: frames=%zu objs=%d objs3d=%d classes=[%s]",
+                label, obs_objects_.size(), total_objects, total_objects_3d,
+                oss.str().c_str());
   }
 
   // =========================================================================
@@ -587,6 +843,119 @@ private:
     auto rp = getRobotPose();
     if (!rp.valid) return 0.0;
     return std::hypot(tx - rp.x, ty - rp.y);
+  }
+
+  static double normalizeAngle(double angle)
+  {
+    while (angle >  M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+  }
+
+  bool getRecentValidPointing(PointingDirection &pt, double max_age_sec = POINTING_MAX_AGE_SEC)
+  {
+    if (!has_new_pointing_ || !latest_pointing_.is_valid) {
+      return false;
+    }
+
+    double age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_pointing_recv_time_).count();
+    if (age > max_age_sec) {
+      return false;
+    }
+
+    double ground_norm = std::hypot(
+      latest_pointing_.direction.x, latest_pointing_.direction.y);
+    if (ground_norm < 1e-3) {
+      return false;
+    }
+
+    pt = latest_pointing_;
+    return true;
+  }
+
+  bool getPointingYawError(double &desired_yaw, double &yaw_error)
+  {
+    PointingDirection pt;
+    if (!getRecentValidPointing(pt)) {
+      return false;
+    }
+
+    auto rp = getRobotPose();
+    if (!rp.valid) {
+      return false;
+    }
+
+    desired_yaw = std::atan2(pt.direction.y, pt.direction.x);
+    yaw_error = normalizeAngle(desired_yaw - rp.yaw);
+    return true;
+  }
+
+  void beginObservationAlignment(const char *label)
+  {
+    observe_align_active_ = true;
+    observe_scan_active_ = false;
+    observe_align_start_time_ = std::chrono::steady_clock::now();
+    stopBase();
+    headCenter();
+    RCLCPP_INFO(this->get_logger(), "[%s] Starting base alignment from pointing", label);
+  }
+
+  void beginObservationScan(const char *label)
+  {
+    observe_align_active_ = false;
+    observe_scan_active_ = true;
+    observe_scan_start_time_ = std::chrono::steady_clock::now();
+    scan_index_ = 0;
+    stopBase();
+    headLookDown();
+    RCLCPP_INFO(this->get_logger(), "[%s] Starting local head scan", label);
+  }
+
+  double observeAlignElapsed() const
+  {
+    return observe_align_active_
+      ? std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - observe_align_start_time_).count()
+      : 0.0;
+  }
+
+  double observeScanElapsed() const
+  {
+    return observe_scan_active_
+      ? std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - observe_scan_start_time_).count()
+      : 0.0;
+  }
+
+  bool runPointingAlignment(const char *label)
+  {
+    double desired_yaw = 0.0;
+    double yaw_error = 0.0;
+    if (!getPointingYawError(desired_yaw, yaw_error)) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[%s] No valid recent pointing, fallback to head scan", label);
+      stopBase();
+      return true;
+    }
+
+    if (std::abs(yaw_error) < POINT_ALIGN_ANGLE_THRESHOLD) {
+      stopBase();
+      RCLCPP_INFO(this->get_logger(),
+                  "[%s] Pointing alignment complete yaw=%.2f err=%.2f",
+                  label, desired_yaw, yaw_error);
+      return true;
+    }
+
+    double angular = std::clamp(yaw_error * 1.6,
+                                -POINT_ALIGN_MAX_ANGULAR,
+                                 POINT_ALIGN_MAX_ANGULAR);
+    turnBase(angular);
+    RCLCPP_INFO_THROTTLE(
+      this->get_logger(), *this->get_clock(), 500,
+      "[%s] Aligning to pointing yaw=%.2f err=%.2f cmd=%.2f",
+      label, desired_yaw, yaw_error, angular);
+    return false;
   }
 
   // =========================================================================
@@ -652,12 +1021,16 @@ private:
     sub_step_ = 0;
     scan_index_ = 0;
     point_again_count_ = 0;
+    point_align_retry_count_ = 0;
+    ready_ack_sent_ = false;
     has_new_objects_ = false;
     has_new_pointing_ = false;
     target_valid_ = false;
     dest_valid_ = false;
     obs_objects_.clear();
     obs_pointings_.clear();
+    observe_align_active_ = false;
+    observe_scan_active_ = false;
     resetNavState();
   }
 
@@ -683,7 +1056,7 @@ private:
 
   void enterTimedState()
   {
-    state_enter_time_ = this->now();
+    state_enter_time_ = std::chrono::steady_clock::now();
     state_timer_initialized_ = true;
   }
 
@@ -696,7 +1069,9 @@ private:
   double elapsed()
   {
     return state_timer_initialized_
-      ? (this->now() - state_enter_time_).seconds() : 0.0;
+      ? std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - state_enter_time_).count()
+      : 0.0;
   }
 
   void changeStep(int next)
@@ -741,7 +1116,7 @@ private:
       if (is_started_) {
         armObserve();
         headCenter();
-        sendMessage(MSG_I_AM_READY);
+        sendReadyAck("transition to task start");
         enableVision(true);
         changeStep(WaitForPickCommand);
       }
@@ -766,17 +1141,57 @@ private:
 
     // -----------------------------------------------------------------
     case ObserveTarget: {
-      // Scan the scene for TIMEOUT_OBSERVE seconds, accumulating detections
-      double t = elapsed();
-      int expected_scan = static_cast<int>(t / 1.2);
-      if (expected_scan > scan_index_ &&
-          scan_index_ < static_cast<int>(SCAN_WIDE.size())) {
-        headScanStep(SCAN_WIDE, scan_index_);
-        scan_index_++;
+      if (sub_step_ == 0) {
+        point_align_retry_count_ = 0;
+        if (getRecentValidPointing(latest_pointing_)) {
+          beginObservationAlignment("ObserveTarget");
+          sub_step_ = 1;
+        } else {
+          RCLCPP_WARN(this->get_logger(),
+                      "[ObserveTarget] No valid pointing at start, fallback to head scan");
+          beginObservationScan("ObserveTarget");
+          sub_step_ = 2;
+        }
+      } else if (sub_step_ == 1 || sub_step_ == 3) {
+        bool aligned = runPointingAlignment("ObserveTarget");
+        if (aligned || observeAlignElapsed() > POINT_ALIGN_TIMEOUT) {
+          if (!aligned) {
+            RCLCPP_WARN(this->get_logger(),
+                        "[ObserveTarget] Pointing alignment timeout, scanning anyway");
+            stopBase();
+          }
+          beginObservationScan("ObserveTarget");
+          sub_step_ = 2;
+        }
+      } else if (sub_step_ == 2) {
+        double scan_t = observeScanElapsed();
+        int expected_scan = static_cast<int>(scan_t / 0.9);
+        if (expected_scan > scan_index_ &&
+            scan_index_ < static_cast<int>(SCAN_LOCAL.size())) {
+          headScanStep(SCAN_LOCAL, scan_index_);
+          scan_index_++;
+        }
+
+        if (point_align_retry_count_ < MAX_POINT_ALIGN_RETRY && scan_t > 2.5) {
+          double desired_yaw = 0.0;
+          double yaw_error = 0.0;
+          if (getPointingYawError(desired_yaw, yaw_error) &&
+              std::abs(yaw_error) > POINT_REALIGN_THRESHOLD) {
+            point_align_retry_count_++;
+            RCLCPP_INFO(this->get_logger(),
+                        "[ObserveTarget] Re-aligning to updated pointing err=%.2f",
+                        yaw_error);
+            beginObservationAlignment("ObserveTarget");
+            sub_step_ = 3;
+            break;
+          }
+        }
       }
 
-      if (t >= TIMEOUT_OBSERVE) {
+      if (elapsed() >= TIMEOUT_OBSERVE) {
+        stopBase();
         headCenter();
+        logObservationSummary("ObserveTarget");
         bool found = selectFromObservations(false);
         if (!found && point_again_count_ < MAX_POINT_AGAIN) {
           RCLCPP_WARN(this->get_logger(), "[ObserveTarget] Target not found, requesting re-point");
@@ -822,16 +1237,57 @@ private:
 
     // -----------------------------------------------------------------
     case ObserveDestination: {
-      double t = elapsed();
-      int expected = static_cast<int>(t / 1.2);
-      if (expected > scan_index_ &&
-          scan_index_ < static_cast<int>(SCAN_WIDE.size())) {
-        headScanStep(SCAN_WIDE, scan_index_);
-        scan_index_++;
+      if (sub_step_ == 0) {
+        point_align_retry_count_ = 0;
+        if (getRecentValidPointing(latest_pointing_)) {
+          beginObservationAlignment("ObserveDest");
+          sub_step_ = 1;
+        } else {
+          RCLCPP_WARN(this->get_logger(),
+                      "[ObserveDest] No valid pointing at start, fallback to head scan");
+          beginObservationScan("ObserveDest");
+          sub_step_ = 2;
+        }
+      } else if (sub_step_ == 1 || sub_step_ == 3) {
+        bool aligned = runPointingAlignment("ObserveDest");
+        if (aligned || observeAlignElapsed() > POINT_ALIGN_TIMEOUT) {
+          if (!aligned) {
+            RCLCPP_WARN(this->get_logger(),
+                        "[ObserveDest] Pointing alignment timeout, scanning anyway");
+            stopBase();
+          }
+          beginObservationScan("ObserveDest");
+          sub_step_ = 2;
+        }
+      } else if (sub_step_ == 2) {
+        double scan_t = observeScanElapsed();
+        int expected_scan = static_cast<int>(scan_t / 0.9);
+        if (expected_scan > scan_index_ &&
+            scan_index_ < static_cast<int>(SCAN_LOCAL.size())) {
+          headScanStep(SCAN_LOCAL, scan_index_);
+          scan_index_++;
+        }
+
+        if (point_align_retry_count_ < MAX_POINT_ALIGN_RETRY && scan_t > 2.5) {
+          double desired_yaw = 0.0;
+          double yaw_error = 0.0;
+          if (getPointingYawError(desired_yaw, yaw_error) &&
+              std::abs(yaw_error) > POINT_REALIGN_THRESHOLD) {
+            point_align_retry_count_++;
+            RCLCPP_INFO(this->get_logger(),
+                        "[ObserveDest] Re-aligning to updated pointing err=%.2f",
+                        yaw_error);
+            beginObservationAlignment("ObserveDest");
+            sub_step_ = 3;
+            break;
+          }
+        }
       }
 
-      if (t >= TIMEOUT_OBSERVE) {
+      if (elapsed() >= TIMEOUT_OBSERVE) {
+        stopBase();
         headCenter();
+        logObservationSummary("ObserveDest");
         bool found = selectFromObservations(true);
         if (!found && point_again_count_ < MAX_POINT_AGAIN) {
           RCLCPP_WARN(this->get_logger(), "[ObserveDest] Dest not found, requesting re-point");

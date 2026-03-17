@@ -21,16 +21,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(cleanup_vision_ros2 REQUIRED)
-
-# Generate custom messages
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/InteractiveCleanupMsg.msg"
-  DEPENDENCIES std_msgs
-)
-
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+find_package(interactive_cleanup_msgs REQUIRED)
 
 # Main controller node
 add_executable(interactive_cleanup_sample src/interactive_cleanup_sample.cpp)
@@ -49,8 +41,8 @@ ament_target_dependencies(interactive_cleanup_sample
   nav2_msgs
   action_msgs
   cleanup_vision_ros2
+  interactive_cleanup_msgs
 )
-target_link_libraries(interactive_cleanup_sample "${cpp_typesupport_target}")
 
 install(TARGETS
   interactive_cleanup_sample
