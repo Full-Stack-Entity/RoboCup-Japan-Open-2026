@@ -1,0 +1,11 @@
+﻿{
+    "teamName": "Inter@ctive Cleanup",
+    "sessionTimeLimit": 360,
+    "maxNumberOfTrials": 5,
+    "isScoreFileRead": false,
+    "executionMode": 0,
+    "isAlwaysGoNext": false,
+    "playbackType": 1,
+    "bgmVolume": 0.01,
+    "reduceLoadInDataGen": true
+}

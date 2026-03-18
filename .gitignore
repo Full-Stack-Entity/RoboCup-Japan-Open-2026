@@ -2,7 +2,7 @@ Dockerfile
 log/*
 build/*
 install/*
-unity_reference/*
+docs/*
 
 # pixi environments
 .pixi/*
