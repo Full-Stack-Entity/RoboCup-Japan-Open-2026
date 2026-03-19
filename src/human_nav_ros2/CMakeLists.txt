@@ -14,6 +14,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(human_navigation_msgs REQUIRED)
+find_package(human_nav_llm_ros2 REQUIRED)
 
 add_executable(human_navigation_sample
   src/human_navigation_sample.cpp
@@ -26,6 +27,7 @@ ament_target_dependencies(human_navigation_sample
   tf2_ros
   tf2_geometry_msgs
   human_navigation_msgs
+  human_nav_llm_ros2
 )
 
 add_executable(hsr_key_teleop
@@ -80,6 +82,11 @@ install(DIRECTORY
 # 原 ROS1: launch/hsr.rviz -> ROS2: 安装到 share/human_nav_ros2/rviz，供 sample_with_rviz_launch 使用
 install(DIRECTORY
   rviz
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+install(FILES
+  HUMAN_NAV_LLM_CHECKLIST.md
   DESTINATION share/${PROJECT_NAME}/
 )
 

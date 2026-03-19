@@ -13,6 +13,8 @@
 #include <human_navigation_msgs/msg/human_navi_avatar_status.hpp>
 #include <human_navigation_msgs/msg/human_navi_object_status.hpp>
 
+#include "human_nav_llm_ros2/srv/rewrite_guidance.hpp"
+
 // 原 ROS1: tf/transform_listener.h -> ROS2: tf2_ros + tf2_geometry_msgs
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -22,6 +24,7 @@
 #include <string>
 #include <algorithm>
 #include <sstream>
+#include <chrono>
 
 class HumanNavigationSample
 {
@@ -125,6 +128,23 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_base_twist_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_base_trajectory_;
 
+  // Subtask C: optional local LLM rewrite (see docs/SUBTASK2_LLM_方案分析.md)
+  bool use_llm_rewrite_{false};
+  double llm_timeout_sec_{2.0};
+  std::string llm_service_name_{"/rewrite_guidance"};
+  rclcpp::Client<human_nav_llm_ros2::srv::RewriteGuidance>::SharedPtr llm_client_;
+  /// 抓取阶段骨架句（已 polish 或与原文一致）；周期性距离行在此基础上拼接，不再调用 LLM
+  std::string polished_pick_base_;
+  /// 放置阶段骨架句
+  std::string polished_place_base_;
+  /// TaskInfo 到达后待主循环中 polish（避免在订阅回调里 spin_until_future_complete 死锁）
+  bool pending_polish_{false};
+
+  static std::string truncateUtf8(const std::string & s, size_t max_chars);
+  static std::string escapeJsonString(const std::string & s);
+  std::string buildContextJson() const;
+  std::string polishGuidance(const std::string & draft, const std::string & phase, const std::string & context_json);
+
   void init()
   {
     // 原 ROS1: step = Initialize; speechState = SpeechState::None; reset();
@@ -149,6 +169,10 @@ private:
     avatarStatus.object_in_right_hand = "";
     avatarStatus.is_target_object_in_left_hand = false;
     avatarStatus.is_target_object_in_right_hand = false;
+
+    polished_pick_base_.clear();
+    polished_place_base_.clear();
+    pending_polish_ = false;
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -172,8 +196,10 @@ private:
     const std::string & message,
     const std::string & displayType)
   {
+    const std::string safe_message = truncateUtf8(message, 400);
+
     human_navigation_msgs::msg::HumanNaviGuidanceMsg guidanceMessage;
-    guidanceMessage.message         = message;
+    guidanceMessage.message         = safe_message;
     guidanceMessage.display_type    = displayType;
     guidanceMessage.source_language = "";  // Blank or ISO-639-1 language code
     guidanceMessage.target_language = "";
@@ -187,6 +213,11 @@ private:
       "Send guide message: %s : %s",
       guidanceMessage.message.c_str(),
       guidanceMessage.display_type.c_str());
+    if (message != safe_message) {
+      RCLCPP_WARN(
+        nodeHandle->get_logger(),
+        "Guidance truncated to <=400 Unicode scalars for competition limit");
+    }
   }
 
   // receive humanNaviMsg from the moderator (Unity)
@@ -614,6 +645,9 @@ private:
     final_location   = getFinalDestination(message);
     initial_location = getInitialDestination(message);
 
+    // 在主循环中 polish（见 run()），避免在回调内嵌套 spin
+    pending_polish_ = true;
+
     isTaskInfoReceived = true;
   }
 
@@ -653,7 +687,7 @@ private:
           std::pow(avatar_y - obj_y, 2) +
           std::pow(avatar_z - obj_z, 2));
 
-        guideMsg = initial_location + "\n" +
+        guideMsg = polished_pick_base_ + "\n" +
                    "Distance to object :" + std::to_string(dist_avatar_object) + " meters";
         sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
         questcounter = 0;
@@ -682,7 +716,7 @@ private:
             << avatarStatus.body.position.y << ", "
             << avatarStatus.body.position.z << ")\n";
 
-        guideMsg = final_location + "\n" + oss.str();
+        guideMsg = polished_place_base_ + "\n" + oss.str();
         sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
         questcounter = 0;
       }
@@ -789,12 +823,51 @@ public:
       "/hsrb/omni_base_controller/command",
       10);
 
+    nodeHandle->declare_parameter("use_llm_rewrite", false);
+    nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
+    nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
+    use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
+    llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
+    llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
+    if (use_llm_rewrite_) {
+      llm_client_ = nodeHandle->create_client<human_nav_llm_ros2::srv::RewriteGuidance>(
+        llm_service_name_);
+      RCLCPP_INFO(
+        nodeHandle->get_logger(),
+        "use_llm_rewrite=true, service=%s timeout=%.2fs",
+        llm_service_name_.c_str(),
+        llm_timeout_sec_);
+    } else {
+      RCLCPP_INFO(nodeHandle->get_logger(), "use_llm_rewrite=false (guidance text unchanged except truncation)");
+    }
+
     timePrevSpeechStateConfirmed = nodeHandle->now();
 
     rclcpp::Time time = nodeHandle->now();
 
     while (rclcpp::ok())
     {
+      rclcpp::spin_some(nodeHandle);
+
+      if (pending_polish_) {
+        const std::string ctx = buildContextJson();
+        const std::string draft_pick  = initial_location + final_location;
+        const std::string draft_place = final_location;
+        if (use_llm_rewrite_) {
+          polished_pick_base_  = polishGuidance(draft_pick, "pick", ctx);
+          polished_place_base_ = polishGuidance(draft_place, "place", ctx);
+        } else {
+          polished_pick_base_  = truncateUtf8(draft_pick, 400);
+          polished_place_base_ = truncateUtf8(draft_place, 400);
+        }
+        pending_polish_ = false;
+        RCLCPP_INFO(
+          nodeHandle->get_logger(),
+          "Polished guidance bases (pick len=%zu, place len=%zu)",
+          polished_pick_base_.size(),
+          polished_place_base_.size());
+      }
+
       switch (step)
       {
         case Initialize:
@@ -864,7 +937,7 @@ public:
           {
             moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
 
-            guideMsg = initial_location + final_location;
+            guideMsg = polished_pick_base_;
 
             if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
                 static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
@@ -906,7 +979,7 @@ public:
               5.0);
 
             // 放置阶段发送“放到哪里”的指令（不能沿用 "Please Keep holding the Object"）
-            guideMsg = final_location;
+            guideMsg = polished_place_base_;
             // 直接发送一次，确保 Unity 立即显示，不依赖 TTS 状态
             sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
             isRequestReceived = false;
@@ -921,13 +994,97 @@ public:
         }
       }
 
-      rclcpp::spin_some(nodeHandle);
       loopRate.sleep();
     }
 
     return 0;
   }
 };
+
+std::string HumanNavigationSample::truncateUtf8(const std::string & s, size_t max_chars)
+{
+  size_t n = 0;
+  size_t i = 0;
+  while (i < s.size() && n < max_chars) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    size_t w = 1;
+    if (c >= 0xF0U) {
+      w = 4;
+    } else if (c >= 0xE0U) {
+      w = 3;
+    } else if (c >= 0xC0U) {
+      w = 2;
+    } else if (c >= 0x80U) {
+      ++i;
+      continue;
+    }
+    if (i + w > s.size()) {
+      break;
+    }
+    i += w;
+    ++n;
+  }
+  return s.substr(0, i);
+}
+
+std::string HumanNavigationSample::escapeJsonString(const std::string & s)
+{
+  std::string o;
+  o.reserve(s.size() + 8);
+  for (const char ch : s) {
+    if (ch == '"' || ch == '\\') {
+      o += '\\';
+    }
+    o += ch;
+  }
+  return o;
+}
+
+std::string HumanNavigationSample::buildContextJson() const
+{
+  std::ostringstream oss;
+  oss << "{\"environment_id\":\"" << escapeJsonString(taskInfo.environment_id) << "\""
+      << ",\"target_prefab\":\"" << escapeJsonString(taskInfo.target_object.name) << "\"}";
+  return oss.str();
+}
+
+std::string HumanNavigationSample::polishGuidance(
+  const std::string & draft, const std::string & phase, const std::string & context_json)
+{
+  if (draft.empty()) {
+    return draft;
+  }
+  if (!use_llm_rewrite_ || !llm_client_) {
+    return truncateUtf8(draft, 400);
+  }
+  if (!llm_client_->wait_for_service(std::chrono::milliseconds(500))) {
+    RCLCPP_WARN(
+      nodeHandle->get_logger(),
+      "LLM service not available within 500ms, using draft");
+    return truncateUtf8(draft, 400);
+  }
+
+  auto request = std::make_shared<human_nav_llm_ros2::srv::RewriteGuidance::Request>();
+  request->draft = draft;
+  request->phase = phase;
+  request->context_json = context_json.empty() ? "{}" : context_json;
+
+  auto future = llm_client_->async_send_request(request);
+  const std::chrono::duration<double> timeout(llm_timeout_sec_);
+  const auto ret = rclcpp::spin_until_future_complete(nodeHandle, future, timeout);
+  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
+    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite future failed or timed out, using draft");
+    return truncateUtf8(draft, 400);
+  }
+
+  const human_nav_llm_ros2::srv::RewriteGuidance::Response::SharedPtr response = future.get();
+  if (!response || !response->success || response->rewritten.empty()) {
+    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite returned failure or empty, using draft");
+    return truncateUtf8(draft, 400);
+  }
+
+  return truncateUtf8(response->rewritten, 400);
+}
 
 int main(int argc, char ** argv)
 {

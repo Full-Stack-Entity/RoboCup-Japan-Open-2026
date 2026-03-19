@@ -1,4 +1,8 @@
 Dockerfile
+
+# 本地文档（规则分析、Cursor 清单等，不提交远程仓库）
+docs/
+
 log/*
 build/*
 install/*
@@ -9,3 +13,8 @@ install/*
 
 # model weights
 *.pt
+
+# Cursor 本地配置（不提交到仓库）
+.cursorignore
+.cursorrules
+.cursor/
