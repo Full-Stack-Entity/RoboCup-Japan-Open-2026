@@ -19,6 +19,8 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 
 #include <cmath>
 #include <string>
@@ -140,6 +142,15 @@ private:
   /// TaskInfo 到达后待主循环中 polish（避免在订阅回调里 spin_until_future_complete 死锁）
   bool pending_polish_{false};
 
+  /// 方位提示节流：上次发送时间(秒)、间隔秒数（规则要求≤15条，不再实时距离）
+  double last_direction_hint_sec_{0.0};
+  double direction_hint_interval_sec_{4.0};
+
+  std::string getDirectionHint(
+    double av_x, double av_y,
+    double target_x, double target_y,
+    const geometry_msgs::msg::Quaternion & body_orient) const;
+
   static std::string truncateUtf8(const std::string & s, size_t max_chars);
   static std::string escapeJsonString(const std::string & s);
   std::string buildContextJson() const;
@@ -173,6 +184,7 @@ private:
     polished_pick_base_.clear();
     polished_place_base_.clear();
     pending_polish_ = false;
+    last_direction_hint_sec_ = 0.0;
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -669,57 +681,39 @@ private:
 
     isSentGetAvatarStatus = false;
 
-    // 2025 版本新增逻辑：在 GuideForTakingObject/GuideForPlacement 阶段周期性给出距离反馈
-    if (step == GuideForTakingObject)
-    {
-      questcounter++;
-      if (questcounter > 10)
-      {
-        sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-        double avatar_x = avatarStatus.body.position.x;
-        double avatar_y = avatarStatus.body.position.y;
-        double avatar_z = avatarStatus.body.position.z;
-        double obj_x    = taskInfo.target_object.position.x;
-        double obj_y    = taskInfo.target_object.position.y;
-        double obj_z    = taskInfo.target_object.position.z;
-        double dist_avatar_object = std::sqrt(
-          std::pow(avatar_x - obj_x, 2) +
-          std::pow(avatar_y - obj_y, 2) +
-          std::pow(avatar_z - obj_z, 2));
+    // 规则≤15条：取消实时距离，改为每隔 N 秒在骨架句后追加方位提示（Forward/Left/Right/Backward/Right here）
+    const double now_sec = nodeHandle->now().seconds();
+    const bool interval_elapsed = (now_sec - last_direction_hint_sec_) >= direction_hint_interval_sec_;
 
-        guideMsg = polished_pick_base_ + "\n" +
-                   "Distance to object :" + std::to_string(dist_avatar_object) + " meters";
-        sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
-        questcounter = 0;
-      }
+    if (step == GuideForTakingObject && interval_elapsed)
+    {
+      sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
+      const std::string base = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
+                                                          : polished_pick_base_;
+      const double obj_x = taskInfo.target_object.position.x;
+      const double obj_y = taskInfo.target_object.position.y;
+      std::string hint = getDirectionHint(
+        avatarStatus.body.position.x, avatarStatus.body.position.y,
+        obj_x, obj_y,
+        avatarStatus.body.orientation);
+      guideMsg = base + "\n" + hint;
+      sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
+      last_direction_hint_sec_ = now_sec;
     }
-    else if (step == GuideForPlacement)
+    else if (step == GuideForPlacement && interval_elapsed)
     {
-      questcounter++;
-      if (questcounter > 10)
-      {
-        sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-        double avatar_x = avatarStatus.body.position.x;
-        double avatar_y = avatarStatus.body.position.y;
-        double avatar_z = avatarStatus.body.position.z;
-        double dest_x   = taskInfo.destination.position.x;
-        double dest_y   = taskInfo.destination.position.y;
-        double dest_z   = taskInfo.destination.position.z;
-        double dist_avatar_dest = std::sqrt(
-          std::pow(avatar_x - dest_x, 2) +
-          std::pow(avatar_y - dest_y, 2) +
-          std::pow(avatar_z - dest_z, 2));
-
-        std::ostringstream oss;
-        oss << "Distance to destination: " << dist_avatar_dest << " meters\n";
-        oss << "body: (" << avatarStatus.body.position.x << ", "
-            << avatarStatus.body.position.y << ", "
-            << avatarStatus.body.position.z << ")\n";
-
-        guideMsg = polished_place_base_ + "\n" + oss.str();
-        sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
-        questcounter = 0;
-      }
+      sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
+      const std::string base = polished_place_base_.empty() ? truncateUtf8(final_location, 400)
+                                                           : polished_place_base_;
+      const double dest_x = taskInfo.destination.position.x;
+      const double dest_y = taskInfo.destination.position.y;
+      std::string hint = getDirectionHint(
+        avatarStatus.body.position.x, avatarStatus.body.position.y,
+        dest_x, dest_y,
+        avatarStatus.body.orientation);
+      guideMsg = base + "\n" + hint;
+      sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
+      last_direction_hint_sec_ = now_sec;
     }
   }
 
@@ -826,9 +820,11 @@ public:
     nodeHandle->declare_parameter("use_llm_rewrite", false);
     nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
     nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
+    nodeHandle->declare_parameter("direction_hint_interval_sec", 4.0);
     use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
     llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
     llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
+    direction_hint_interval_sec_ = nodeHandle->get_parameter("direction_hint_interval_sec").as_double();
     if (use_llm_rewrite_) {
       llm_client_ = nodeHandle->create_client<human_nav_llm_ros2::srv::RewriteGuidance>(
         llm_service_name_);
@@ -851,7 +847,7 @@ public:
 
       if (pending_polish_) {
         const std::string ctx = buildContextJson();
-        const std::string draft_pick  = initial_location + final_location;
+        const std::string draft_pick  = initial_location;
         const std::string draft_place = final_location;
         if (use_llm_rewrite_) {
           polished_pick_base_  = polishGuidance(draft_pick, "pick", ctx);
@@ -937,7 +933,8 @@ public:
           {
             moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
 
-            guideMsg = polished_pick_base_;
+            guideMsg = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
+                                                  : polished_pick_base_;
 
             if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
                 static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
@@ -979,7 +976,8 @@ public:
               5.0);
 
             // 放置阶段发送“放到哪里”的指令（不能沿用 "Please Keep holding the Object"）
-            guideMsg = polished_place_base_;
+            guideMsg = polished_place_base_.empty() ? truncateUtf8(final_location, 400)
+                                                   : polished_place_base_;
             // 直接发送一次，确保 Unity 立即显示，不依赖 TTS 状态
             sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
             isRequestReceived = false;
@@ -1038,6 +1036,40 @@ std::string HumanNavigationSample::escapeJsonString(const std::string & s)
     o += ch;
   }
   return o;
+}
+
+std::string HumanNavigationSample::getDirectionHint(
+  double av_x, double av_y,
+  double target_x, double target_y,
+  const geometry_msgs::msg::Quaternion & body_orient) const
+{
+  const double dx = target_x - av_x;
+  const double dy = target_y - av_y;
+  const double dist = std::sqrt(dx * dx + dy * dy);
+
+  constexpr double NEAR_THRESHOLD = 0.5;
+  if (dist < NEAR_THRESHOLD) {
+    return "Right here.";
+  }
+
+  tf2::Quaternion tf_q;
+  tf2::fromMsg(body_orient, tf_q);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(tf_q).getRPY(roll, pitch, yaw);
+
+  const double forward_x = std::cos(yaw);
+  const double forward_y = std::sin(yaw);
+  const double to_target_angle = std::atan2(dy, dx);
+  double rel = to_target_angle - std::atan2(forward_y, forward_x);
+  while (rel > M_PI) rel -= 2.0 * M_PI;
+  while (rel < -M_PI) rel += 2.0 * M_PI;
+
+  const double deg45 = M_PI / 4.0;
+  const double deg135 = 3.0 * M_PI / 4.0;
+  if (rel >= -deg45 && rel <= deg45) return "Forward.";
+  if (rel > deg45 && rel <= deg135) return "Right.";
+  if (rel < -deg45 && rel >= -deg135) return "Left.";
+  return "Backward.";
 }
 
 std::string HumanNavigationSample::buildContextJson() const
