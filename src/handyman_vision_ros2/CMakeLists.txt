@@ -1,8 +1,7 @@
 cmake_minimum_required(VERSION 3.8)
-project(vision_ros2)
+project(handyman_vision_ros2)
 
 find_package(ament_cmake REQUIRED)
-find_package(rclpy REQUIRED)
 
 install(PROGRAMS
   scripts/object_detection_node.py
@@ -10,11 +9,14 @@ install(PROGRAMS
   RENAME object_detection_node
 )
 
+install(FILES
+  scripts/last.pt
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   launch
-  config
-  models
-  DESTINATION share/${PROJECT_NAME}/
+  DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()
