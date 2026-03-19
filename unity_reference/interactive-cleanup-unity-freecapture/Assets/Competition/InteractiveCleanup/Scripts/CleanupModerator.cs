@@ -183,13 +183,7 @@ namespace SIGVerse.Competition.InteractiveCleanup
 			{
 				freeCaptureMode = this.gameObject.AddComponent<CleanupFreeCaptureMode>();
 			}
-			freeCaptureMode.Initialize(this.environments);
-
-			if(this.mainPanelController != null)
-			{
-				this.mainPanelController.SetTaskMessageText(
-					"FreeCapture\nRMB look | WASD move | Q/E up/down | [ ] switch map | P screenshot | R reset");
-			}
+			freeCaptureMode.Initialize(this.environments, this.mainPanelController);
 
 			SIGVerseLogger.Info("FreeCapture mode started.");
 			this.enabled = false;

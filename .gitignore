@@ -3,6 +3,7 @@ log/*
 build/*
 install/*
 docs/*
+picture/*
 
 # pixi environments
 .pixi/*
