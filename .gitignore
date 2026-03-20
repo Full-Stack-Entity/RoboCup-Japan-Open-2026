@@ -8,6 +8,7 @@ picture/*
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+.claude/*
 unsolved.md
 
 # model weights
