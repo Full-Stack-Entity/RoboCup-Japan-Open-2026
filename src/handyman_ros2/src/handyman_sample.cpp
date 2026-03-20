@@ -1554,55 +1554,21 @@ public:
         }
         case GoToRoom1:
         {
-          if(!found_object || !room_reached){
-            if (!nav_goal_sent_) {
-              auto goal_pose = roomLocation(room_list[0],patrol_step);
-              RCLCPP_INFO(node_->get_logger(), "Assigned goal for room: %s, x: %.3f, y: %.3f", room_list[0].c_str(), goal_pose.pose.position.x, goal_pose.pose.position.y);
-              goal_pose.header.frame_id = "map";
-              goal_pose.header.stamp = node_->now();
-
-              sendNavGoal(goal_pose);
-              nav_goal_sent_ = true;
+          if(found_object){
+            if(nav_goal_sent_) {
+              RCLCPP_INFO(node_->get_logger(), "Object detected! Cancelling navigation to approach target.");
+              if(nav_goal_handle_) {
+                nav_action_client_->async_cancel_goal(nav_goal_handle_);
+              }
+              stopBase(pub_base_twist);
             }
 
-            if(nav_goal_reached_.load()){
-                RCLCPP_INFO(node_->get_logger(), "Navigation to room succeeded");
-                nav_goal_reached_ = false;
-                nav_goal_sent_ = false;
-                patrol_step++;
-                if(patrol_step >= max_patrol){
-                  patrol_step = 0;
-                }
-
-                if(!room_reached){
-                  RCLCPP_INFO(node_->get_logger(), "Room Reached");
-                  sendMessage(pub_msg, MSG_ROOM_REACHED);
-                  room_reached = true;
-                }
-            } else if (nav_goal_failed_.load()) {
-                RCLCPP_WARN(node_->get_logger(), "Navigation failed, retrying with next patrol step...");
-                nav_goal_failed_ = false;
-                nav_goal_sent_ = false;
-                patrol_step++;
-                if(patrol_step >= max_patrol){
-                  patrol_step = 0;
-                }
-            } else if (nav_goal_sent_ &&
-                       (node_->now() - nav_goal_send_time_).seconds() > NAV_GOAL_TIMEOUT_SEC) {
-                RCLCPP_WARN(node_->get_logger(), "Navigation goal timed out after %.0f seconds, retrying...",
-                           NAV_GOAL_TIMEOUT_SEC);
-                if (nav_goal_handle_) {
-                  nav_action_client_->async_cancel_goal(nav_goal_handle_);
-                }
-                nav_goal_sent_ = false;
-                nav_goal_failed_ = false;
-                patrol_step++;
-                if(patrol_step >= max_patrol){
-                  patrol_step = 0;
-                }
+            if(!room_reached){
+              RCLCPP_INFO(node_->get_logger(), "Room Reached (object found during navigation)");
+              sendMessage(pub_msg, MSG_ROOM_REACHED);
+              room_reached = true;
             }
 
-          }else{
             ready_to_grasp = false;
             aligned_x = false;
             aligned_y = false;
@@ -1612,6 +1578,55 @@ public:
             body_height = 0.0;
             nav_goal_sent_ = false;
             step_ = MoveToInFrontOfTarget;
+            RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
+            break;
+          }
+
+          if (!nav_goal_sent_) {
+            auto goal_pose = roomLocation(room_list[0],patrol_step);
+            RCLCPP_INFO(node_->get_logger(), "Assigned goal for room: %s, x: %.3f, y: %.3f", room_list[0].c_str(), goal_pose.pose.position.x, goal_pose.pose.position.y);
+            goal_pose.header.frame_id = "map";
+            goal_pose.header.stamp = node_->now();
+
+            sendNavGoal(goal_pose);
+            nav_goal_sent_ = true;
+          }
+
+          if(nav_goal_reached_.load()){
+              RCLCPP_INFO(node_->get_logger(), "Navigation to room succeeded");
+              nav_goal_reached_ = false;
+              nav_goal_sent_ = false;
+              patrol_step++;
+              if(patrol_step >= max_patrol){
+                patrol_step = 0;
+              }
+
+              if(!room_reached){
+                RCLCPP_INFO(node_->get_logger(), "Room Reached");
+                sendMessage(pub_msg, MSG_ROOM_REACHED);
+                room_reached = true;
+              }
+          } else if (nav_goal_failed_.load()) {
+              RCLCPP_WARN(node_->get_logger(), "Navigation failed, retrying with next patrol step...");
+              nav_goal_failed_ = false;
+              nav_goal_sent_ = false;
+              patrol_step++;
+              if(patrol_step >= max_patrol){
+                patrol_step = 0;
+              }
+          } else if (nav_goal_sent_ &&
+                     (node_->now() - nav_goal_send_time_).seconds() > NAV_GOAL_TIMEOUT_SEC) {
+              RCLCPP_WARN(node_->get_logger(), "Navigation goal timed out after %.0f seconds, retrying...",
+                         NAV_GOAL_TIMEOUT_SEC);
+              if (nav_goal_handle_) {
+                nav_action_client_->async_cancel_goal(nav_goal_handle_);
+              }
+              nav_goal_sent_ = false;
+              nav_goal_failed_ = false;
+              patrol_step++;
+              if(patrol_step >= max_patrol){
+                patrol_step = 0;
+              }
           }
 
           break;
@@ -1669,7 +1684,6 @@ public:
         }
         case MoveToInFrontOfTarget:
         {
-
           if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)){
 
             if(x_det < 240 - 25*tol_multiplier){
@@ -1704,18 +1718,24 @@ public:
             moveArm(pub_arm_trajectory, positions, duration);
 
             moveBase(pub_base_twist,y_adjust, x_adjust*0.5 ,x_adjust);
-          }
 
-          if(aligned_x && aligned_y){
-            std::cout << "ready = " << std::to_string(ready_to_grasp) << std::endl;
-            if(ready_to_grasp == false){
-              moveBase(pub_base_twist,0.02,0.0,0.0);
-            }else{
-              std::cout << "Gripping" << std::endl;
-              moveBase(pub_base_twist,0.0,0.0,0.0);
-              waiting_start_time = node_->now();
-              step_ = Grasp;
+            if(aligned_x && aligned_y){
+              std::cout << "ready = " << std::to_string(ready_to_grasp) << std::endl;
+              if(ready_to_grasp == false){
+                moveBase(pub_base_twist,0.02,0.0,0.0);
+              }else{
+                std::cout << "Gripping" << std::endl;
+                moveBase(pub_base_twist,0.0,0.0,0.0);
+                waiting_start_time = node_->now();
+                step_ = Grasp;
+              }
             }
+          } else {
+            aligned_x = false;
+            aligned_y = false;
+            moveBase(pub_base_twist, 0.0, 0.0, 0.15);
+            RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+              "Object lost from view, rotating to search...");
           }
 
           break;
