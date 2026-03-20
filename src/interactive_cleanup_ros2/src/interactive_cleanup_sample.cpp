@@ -4,6 +4,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
 #include <trajectory_msgs/msg/joint_trajectory_point.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -201,6 +202,22 @@ private:
   static constexpr double APPROACH_STOP_DIST   = 0.45;
   static constexpr double TURN_THRESHOLD       = 0.15;
   static constexpr double VISUAL_SERVO_FWD     = 0.08;
+
+  // =========================================================================
+  // Known destination coordinates (from environment config)
+  // =========================================================================
+  const std::map<std::string, std::pair<double, double>> KNOWN_DESTINATIONS = {
+      {"trash_box_for_recycle",    {-4.620, -5.170}},
+      {"trash_box_for_burnable",   {-2.830, -5.170}},
+      {"trash_box_for_bottle_can", {-1.000, -5.170}},
+      {"square_low_table",         {-5.397, -3.129}},
+      {"wagon_1",                  {-5.026, -1.117}},
+      {"wagon_2",                  {-5.380,  0.814}},
+      {"white_side_table_1",       { 1.110, -2.280}},
+      {"white_side_table_2",       {-0.740,  1.416}},
+      {"cardboard_box",            { 1.098, -0.324}},
+      {"wooden_shelf",             {-3.094,  1.530}},
+  };
 
   // =========================================================================
   // State variables
@@ -569,6 +586,88 @@ private:
   }
 
   /**
+   * Determine destination by Avatar position.
+   * Averages the pointing origins (Avatar wrist positions in odom frame) from
+   * accumulated observations, transforms to map frame, and finds the nearest
+   * known destination.
+   * @return true if a valid destination was matched
+   */
+  bool selectDestinationByAvatarPosition()
+  {
+    // Collect all valid pointing origins (Avatar position in odom frame)
+    int count = 0;
+    double avg_x = 0.0, avg_y = 0.0;
+    for (const auto &pt : obs_pointings_) {
+      if (!pt.is_valid) continue;
+      avg_x += pt.origin.x;
+      avg_y += pt.origin.y;
+      count++;
+    }
+
+    if (count == 0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[AvatarDest] No valid pointing data for Avatar position");
+      return false;
+    }
+
+    avg_x /= count;
+    avg_y /= count;
+    RCLCPP_INFO(this->get_logger(),
+                "[AvatarDest] Avatar avg position in odom: (%.2f, %.2f) from %d samples",
+                avg_x, avg_y, count);
+
+    // Transform Avatar position from odom to map frame
+    double map_x = avg_x, map_y = avg_y;
+    try {
+      auto tf = tf_buffer_->lookupTransform("map", "odom", tf2::TimePointZero,
+                                            tf2::durationFromSec(1.0));
+      geometry_msgs::msg::PointStamped pt_odom, pt_map;
+      pt_odom.header.frame_id = "odom";
+      pt_odom.point.x = avg_x;
+      pt_odom.point.y = avg_y;
+      pt_odom.point.z = 0.0;
+      tf2::doTransform(pt_odom, pt_map, tf);
+      map_x = pt_map.point.x;
+      map_y = pt_map.point.y;
+      RCLCPP_INFO(this->get_logger(),
+                  "[AvatarDest] Avatar position in map: (%.2f, %.2f)", map_x, map_y);
+    } catch (const tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[AvatarDest] odom→map TF unavailable (%s), assuming odom≈map", ex.what());
+    }
+
+    // Find closest known destination
+    double best_dist = 999.0;
+    std::string best_name;
+    for (const auto &[dname, dcoord] : KNOWN_DESTINATIONS) {
+      double d = std::hypot(map_x - dcoord.first, map_y - dcoord.second);
+      if (d < best_dist) {
+        best_dist = d;
+        best_name = dname;
+      }
+    }
+
+    if (best_dist > 5.0) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[AvatarDest] Nearest destination '%s' is %.1fm away — too far, rejecting",
+                  best_name.c_str(), best_dist);
+      return false;
+    }
+
+    auto it = KNOWN_DESTINATIONS.find(best_name);
+    dest_position_.x = it->second.first;
+    dest_position_.y = it->second.second;
+    dest_position_.z = 0.0;
+    dest_valid_ = true;
+    dest_class_ = best_name;
+
+    RCLCPP_INFO(this->get_logger(),
+                "[AvatarDest] Matched destination: '%s' at (%.2f, %.2f), dist=%.2fm from Avatar",
+                best_name.c_str(), dest_position_.x, dest_position_.y, best_dist);
+    return true;
+  }
+
+  /**
    * Select the target/destination from accumulated observations.
    * @param is_dest true → picking destination (prefer furniture classes)
    * @return true if a valid target was found
@@ -754,6 +853,7 @@ private:
                 is_dest ? "DESTINATION" : "TARGET",
                 cls.c_str(), pos.x, pos.y, pos.z, best->votes,
                 best->best_ray3d, best->best_ray2d, best->score_sum);
+
     return true;
   }
 
@@ -964,12 +1064,15 @@ private:
   void sendNavGoal(double x, double y, double yaw)
   {
     if (nav_goal_sent_) return;
-    if (!nav_client_->wait_for_action_server(2s)) {
-      RCLCPP_WARN(this->get_logger(), "Nav2 not available, using direct drive");
+    RCLCPP_INFO(this->get_logger(), "Waiting for Nav2 action server (up to 10s)...");
+    if (!nav_client_->wait_for_action_server(10s)) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Nav2 action server not available after 10s, falling back to direct drive");
       nav2_available_ = false;
       nav_goal_failed_ = true;
       return;
     }
+    RCLCPP_INFO(this->get_logger(), "Nav2 action server connected");
     nav2_available_ = true;
 
     tf2::Quaternion q; q.setRPY(0, 0, yaw); q.normalize();
@@ -1288,7 +1391,7 @@ private:
         stopBase();
         headCenter();
         logObservationSummary("ObserveDest");
-        bool found = selectFromObservations(true);
+        bool found = selectDestinationByAvatarPosition();
         if (!found && point_again_count_ < MAX_POINT_AGAIN) {
           RCLCPP_WARN(this->get_logger(), "[ObserveDest] Dest not found, requesting re-point");
           point_again_count_++;

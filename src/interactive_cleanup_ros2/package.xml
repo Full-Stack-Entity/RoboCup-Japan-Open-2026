@@ -41,6 +41,7 @@
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>cleanup_vision_ros2</exec_depend>
   <exec_depend>interactive_cleanup_msgs</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -210,6 +210,12 @@ ros2 launch competition_test_tools teleop_human_navigation_launch.xml
 ros2 launch handyman_ros2 hsr_nav.launch.py
 ```
 
+**自建 Interactive cleanup 全栈 **
+
+```bash
+ros2 launch interactive_cleanup cleanup.launch.py use_nav2:=true use_rviz:=true
+```
+
 更多 launch 与键盘遥控说明见 `src/handyman_ros2/README.md`。
 
 ## 参考链接

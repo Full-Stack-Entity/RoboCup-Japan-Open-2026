@@ -11,11 +11,3 @@ spray_bottle
 sugar
 toy_penguin
 tumbler
-wagon
-cardboard_box
-square_low_table
-trash_box_for_bottle_can
-trash_box_for_burnable
-trash_box_for_recycle
-white_side_table
-wooden_shelf

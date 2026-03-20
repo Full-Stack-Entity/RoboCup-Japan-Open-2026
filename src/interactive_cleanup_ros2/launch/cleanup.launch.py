@@ -5,17 +5,25 @@ Full-stack launch for Interactive Cleanup:
   - cleanup_detection_node      (Python vision: YOLO + PoseLandmarker)
   - sigverse_ros_bridge         (SIGVerse ↔ ROS 2)
   - rosbridge_websocket         (WebSocket bridge)
+  - Nav2 stack (optional, default on)
+  - RViz2 (optional, default off)
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, GroupAction
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.launch_description_sources import AnyLaunchDescriptionSource
+from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution
 
 
 def generate_launch_description():
+    # Package paths
+    pkg_interactive_cleanup = FindPackageShare('interactive_cleanup')
+    pkg_nav2_bringup = FindPackageShare('nav2_bringup')
+
+    # Launch arguments
     args = [
         DeclareLaunchArgument(
             'sigverse_ros_bridge_port', default_value='50001'),
@@ -23,8 +31,23 @@ def generate_launch_description():
             'ros_bridge_port', default_value='9090'),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true'),
+        DeclareLaunchArgument(
+            'use_nav2', default_value='true',
+            description='Launch Nav2 navigation stack'),
+        DeclareLaunchArgument(
+            'use_rviz', default_value='false',
+            description='Launch RViz2 with preconfigured display'),
     ]
 
+    # Map and config file paths
+    map_yaml = PathJoinSubstitution([
+        pkg_interactive_cleanup, 'map', 'cleanup_map.yaml'])
+    nav2_params = PathJoinSubstitution([
+        pkg_interactive_cleanup, 'config', 'nav2_params.yaml'])
+    rviz_config = PathJoinSubstitution([
+        pkg_interactive_cleanup, 'config', 'cleanup.rviz'])
+
+    # ---- Core nodes ----
     cleanup_node = Node(
         package='interactive_cleanup',
         executable='interactive_cleanup_sample',
@@ -63,6 +86,46 @@ def generate_launch_description():
         }.items(),
     )
 
+    # ---- Nav2 (conditional) ----
+    nav2_launch = GroupAction(
+        condition=IfCondition(LaunchConfiguration('use_nav2')),
+        actions=[
+            IncludeLaunchDescription(
+                AnyLaunchDescriptionSource(
+                    PathJoinSubstitution([
+                        pkg_nav2_bringup, 'launch', 'bringup_launch.py',
+                    ])
+                ),
+                launch_arguments={
+                    'map': map_yaml,
+                    'params_file': nav2_params,
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'autostart': 'true',
+                }.items(),
+            ),
+        ],
+    )
+
+    # ---- RViz2 (conditional) ----
+    rviz_node = Node(
+        condition=IfCondition(LaunchConfiguration('use_rviz')),
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config],
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }],
+    )
+
     return LaunchDescription(
-        args + [cleanup_node, vision_node, sigverse_bridge, rosbridge]
+        args + [
+            cleanup_node,
+            vision_node,
+            sigverse_bridge,
+            rosbridge,
+            nav2_launch,
+            rviz_node,
+        ]
     )

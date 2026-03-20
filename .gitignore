@@ -4,6 +4,7 @@ build/*
 install/*
 docs/*
 picture/*
+reference/*
 
 # pixi environments
 .pixi/*
