@@ -30,7 +30,20 @@ Rules:
 - Do NOT add objects, colors, or places that are not clearly implied by the draft or the JSON context.
 - Do NOT use rare or literary vocabulary.
 - Maximum length: about {max_output_chars} characters (stay well under this if possible).
-- No quotes, no numbering, no preamble — only the instruction text."""
+- No quotes, no numbering, no preamble — only the instruction text.
+
+Stage templates (strict):
+- If phase is "pick", use:
+  "Please grab the <target> on/near <main location>, near <landmark>."
+  If no landmark is known, omit ", near <landmark>".
+- If phase is "place", use:
+  "Please place it on/in/near <destination>, near <landmark>, where the robot points."
+  Keep destination and landmark as separate noun phrases.
+
+Grammar constraints:
+- Keep relation words explicit and separated: "on <A>, near <B>".
+- Never output fused phrases like "near the coffee set mota table".
+- Destination first, nearby landmark second."""
 
 
 def _ollama_chat(
@@ -131,7 +144,9 @@ class RewriteGuidanceNode(Node):
                 f"Phase: {phase}\n"
                 f"Context JSON (do not invent objects not present here):\n{ctx}\n\n"
                 f"Draft instruction:\n{draft}\n\n"
-                f"Rewrite the draft following the system rules. Output only the new instruction."
+                "Rewrite using the stage template rules above. "
+                "If information is missing, keep draft meaning and produce a grammatical sentence. "
+                "Output only the new instruction."
             )
 
             ok, text = _ollama_chat(
