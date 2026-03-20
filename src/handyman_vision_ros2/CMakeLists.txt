@@ -9,13 +9,9 @@ install(PROGRAMS
   RENAME object_detection_node
 )
 
-install(FILES
-  scripts/last.pt
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 install(DIRECTORY
   launch
+  models
   DESTINATION share/${PROJECT_NAME}
 )
 

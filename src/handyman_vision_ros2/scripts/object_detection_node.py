@@ -18,13 +18,43 @@ from geometry_msgs.msg import Pose, PoseStamped
 
 from ultralytics import YOLO
 
-model_name = "last.pt"
-current_directory = os.path.dirname(__file__)
-file_path = os.path.join(current_directory, model_name)
+try:
+    from ament_index_python.packages import get_package_share_directory
+except ImportError:
+    get_package_share_directory = None
 
-model = YOLO(file_path)
 
-print("Model loaded successfully")
+def _find_model_path():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    src_models = os.path.normpath(os.path.join(script_dir, '..', 'models'))
+
+    share_models = None
+    if get_package_share_directory is not None:
+        try:
+            share_models = os.path.join(
+                get_package_share_directory('handyman_vision_ros2'), 'models')
+        except Exception:
+            pass
+
+    vision_src_models = os.path.normpath(
+        os.path.join(script_dir, '..', '..', 'vision_ros2', 'models'))
+
+    search_dirs = []
+    for d in (share_models, src_models, script_dir, vision_src_models):
+        if d and os.path.normpath(d) not in [os.path.normpath(x) for x in search_dirs]:
+            search_dirs.append(d)
+
+    for name in ('last.pt', 'yolo12n.pt'):
+        for d in search_dirs:
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                return p
+
+    return os.path.join(src_models, 'yolo12n.pt')
+
+
+model = YOLO(_find_model_path())
+print(f"Model loaded successfully: {model.model_name}")
 
 head_cam_topic = '/hsrb/head_rgbd_sensor/rgb/image_raw'
 hand_cam_topic = '/hsrb/hand_camera/image_raw'
