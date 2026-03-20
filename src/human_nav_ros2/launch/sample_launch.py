@@ -24,6 +24,7 @@ def _launch_setup(context, *args, **kwargs):
     llm_http_timeout = float(LaunchConfiguration("llm_http_timeout_sec").perform(context))
     llm_client_timeout = float(LaunchConfiguration("llm_client_timeout_sec").perform(context))
     llm_service = LaunchConfiguration("llm_service_name").perform(context)
+    direction_hint_interval = float(LaunchConfiguration("direction_hint_interval_sec").perform(context))
 
     rosbridge_websocket = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(
@@ -81,6 +82,7 @@ def _launch_setup(context, *args, **kwargs):
                     "use_llm_rewrite": enable_llm,
                     "llm_timeout_sec": llm_client_timeout,
                     "llm_service_name": llm_service,
+                    "direction_hint_interval_sec": direction_hint_interval,
                 }
             ],
         )
@@ -126,6 +128,11 @@ def generate_launch_description():
                 "llm_service_name",
                 default_value="/rewrite_guidance",
                 description="RewriteGuidance service name.",
+            ),
+            DeclareLaunchArgument(
+                "direction_hint_interval_sec",
+                default_value="4.0",
+                description="Interval (seconds) between directional hints (Forward/Left/Right/Backward).",
             ),
             OpaqueFunction(function=_launch_setup),
         ]
