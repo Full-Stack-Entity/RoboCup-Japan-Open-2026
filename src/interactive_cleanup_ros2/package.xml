@@ -23,7 +23,8 @@
   <build_depend>tf2_geometry_msgs</build_depend>
   <build_depend>nav2_msgs</build_depend>
   <build_depend>action_msgs</build_depend>
-  <build_depend>rosidl_default_generators</build_depend>
+  <build_depend>cleanup_vision_ros2</build_depend>
+  <build_depend>interactive_cleanup_msgs</build_depend>
 
   <exec_depend>rclcpp</exec_depend>
   <exec_depend>rclcpp_action</exec_depend>
@@ -38,9 +39,9 @@
   <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
-  <exec_depend>rosidl_default_runtime</exec_depend>
-
-  <member_of_group>rosidl_interface_packages</member_of_group>
+  <exec_depend>cleanup_vision_ros2</exec_depend>
+  <exec_depend>interactive_cleanup_msgs</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -1,20 +1,29 @@
+#Docker配置文件
 Dockerfile
 
-# 本地文档（规则分析、Cursor 清单等，不提交远程仓库）
-docs/
+# 本地文档参考内容（规则分析、Cursor 清单等，不提交远程仓库）
+docs/*
+picture/*
+reference/*
+unsolved.md
 
+# 本地日志，编译，安装文件
 log/*
 build/*
 install/*
 
-# pixi environments
+# pixi 环境
 .pixi/*
 !.pixi/config.toml
 
-# model weights
-*.pt
 
-# Cursor 本地配置（不提交到仓库）
+# 模型权重
+*.pt
+*.task
+
+# Cursor 和Coding Agent本地配置
 .cursorignore
 .cursorrules
-.cursor/
+.cursor/*
+.claude/*
+

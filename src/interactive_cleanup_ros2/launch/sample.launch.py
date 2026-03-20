@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Launch only the interactive cleanup controller (no vision, for basic testing)."""
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
