@@ -96,3 +96,39 @@ training/
 - `split_dataset.py` 会按图像级别随机切分 `train/val/test`。
 - 因为取消了 session 切分，导出前必须主动删除大量近重复帧，否则验证集会偏乐观。
 - `training/data/raw/notes.json` 目前主要作为 Label Studio 导出的伴随文件保留，训练脚本不依赖其中的字段。
+
+# Label Interface模板
+```html
+<View>
+  <Image name="image" value="$image"/>
+  <RectangleLabels name="label" toName="image">
+    <Label value="apple" background="#E63946" category="0"/>
+    <Label value="bear_doll" background="#457B9D" category="1"/>
+    <Label value="camera" background="#2A9D8F" category="2"/>
+    <Label value="canned_juice" background="#E9C46A" category="3"/>
+    <Label value="cigarette" background="#F4A261" category="4"/>
+    <Label value="cubic_clock" background="#264653" category="5"/>
+    <Label value="dog_doll" background="#E76F51" category="6"/>
+    <Label value="empty_ketchup" background="#2EC4B6" category="7"/>
+    <Label value="empty_plastic_bottle" background="#06D6A0" category="8"/>
+    <Label value="filled_ketchup" background="#118AB2" category="9"/>
+    <Label value="filled_plastic_bottle" background="#EF476F" category="10"/>
+    <Label value="ground_pepper" background="#FFD166" category="11"/>
+    <Label value="hourglass" background="#073B4C" category="12"/>
+    <Label value="nursing_bottle" background="#669BBC" category="13"/>
+    <Label value="pink_cup" background="#C1121F" category="14"/>
+    <Label value="rabbit_doll" background="#52B788" category="15"/>
+    <Label value="rubiks_cube" background="#FF9F1C" category="16"/>
+    <Label value="salt" background="#9B5DE5" category="17"/>
+    <Label value="sauce" background="#00BBF9" category="18"/>
+    <Label value="soysauce" background="#00F5D4" category="19"/>
+    <Label value="spray_bottle" background="#F15BB5" category="20"/>
+    <Label value="sugar" background="#FEE440" category="21"/>
+    <Label value="toy_car" background="#7B2CBF" category="22"/>
+    <Label value="toy_duck" background="#3A0CA3" category="23"/>
+    <Label value="toy_penguin" background="#4361EE" category="24"/>
+    <Label value="tumbler" background="#4CC9F0" category="25"/>
+    <Label value="white_cup" background="#7209B7" category="26"/>
+  </RectangleLabels>
+</View>
+```
