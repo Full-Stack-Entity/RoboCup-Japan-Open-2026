@@ -23,10 +23,12 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 
 #include <cmath>
+#include <iomanip>
 #include <string>
 #include <algorithm>
 #include <sstream>
 #include <chrono>
+#include <cctype>
 
 class HumanNavigationSample
 {
@@ -134,6 +136,7 @@ private:
   bool use_llm_rewrite_{false};
   double llm_timeout_sec_{2.0};
   std::string llm_service_name_{"/rewrite_guidance"};
+  bool strict_template_mode_{true};
   rclcpp::Client<human_nav_llm_ros2::srv::RewriteGuidance>::SharedPtr llm_client_;
   /// 抓取阶段骨架句（已 polish 或与原文一致）；周期性距离行在此基础上拼接，不再调用 LLM
   std::string polished_pick_base_;
@@ -145,11 +148,22 @@ private:
   /// 方位提示节流：上次发送时间(秒)、间隔秒数（规则要求≤15条，不再实时距离）
   double last_direction_hint_sec_{0.0};
   double direction_hint_interval_sec_{4.0};
+  std::string last_wrong_object_name_;
 
   std::string getDirectionHint(
     double av_x, double av_y,
     double target_x, double target_y,
     const geometry_msgs::msg::Quaternion & body_orient) const;
+  static std::string toReadableName(const std::string & name);
+  static std::string toLowerAscii(std::string s);
+  std::string nearestFurnitureName(double x, double y, double z) const;
+  std::string nearestNonTargetName(
+    double x, double y, double z,
+    const std::string & avoid_type_lower,
+    double max_distance_m,
+    const std::string & avoid_phrase_lower = "") const;
+  std::string buildStrictPickTemplate() const;
+  std::string buildStrictPlaceTemplate() const;
 
   static std::string truncateUtf8(const std::string & s, size_t max_chars);
   static std::string escapeJsonString(const std::string & s);
@@ -185,6 +199,7 @@ private:
     polished_place_base_.clear();
     pending_polish_ = false;
     last_direction_hint_sec_ = 0.0;
+    last_wrong_object_name_.clear();
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -690,13 +705,18 @@ private:
       sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
       const std::string base = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
                                                           : polished_pick_base_;
+      const double av_x = avatarStatus.body.position.x;
+      const double av_y = avatarStatus.body.position.y;
+      const double av_z = avatarStatus.body.position.z;
       const double obj_x = taskInfo.target_object.position.x;
       const double obj_y = taskInfo.target_object.position.y;
-      std::string hint = getDirectionHint(
-        avatarStatus.body.position.x, avatarStatus.body.position.y,
-        obj_x, obj_y,
-        avatarStatus.body.orientation);
-      guideMsg = base + "\n" + hint;
+      const double obj_z = taskInfo.target_object.position.z;
+      const double dist_obj = std::sqrt(
+        std::pow(av_x - obj_x, 2) + std::pow(av_y - obj_y, 2) + std::pow(av_z - obj_z, 2));
+      std::string hint = getDirectionHint(av_x, av_y, obj_x, obj_y, avatarStatus.body.orientation);
+      std::ostringstream dist_ss;
+      dist_ss << std::fixed << std::setprecision(2) << dist_obj;
+      guideMsg = base + "\n" + hint + "\nDistance to object: " + dist_ss.str() + " meters";
       sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
       last_direction_hint_sec_ = now_sec;
     }
@@ -705,13 +725,18 @@ private:
       sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
       const std::string base = polished_place_base_.empty() ? truncateUtf8(final_location, 400)
                                                            : polished_place_base_;
+      const double av_x = avatarStatus.body.position.x;
+      const double av_y = avatarStatus.body.position.y;
+      const double av_z = avatarStatus.body.position.z;
       const double dest_x = taskInfo.destination.position.x;
       const double dest_y = taskInfo.destination.position.y;
-      std::string hint = getDirectionHint(
-        avatarStatus.body.position.x, avatarStatus.body.position.y,
-        dest_x, dest_y,
-        avatarStatus.body.orientation);
-      guideMsg = base + "\n" + hint;
+      const double dest_z = taskInfo.destination.position.z;
+      const double dist_dest = std::sqrt(
+        std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2) + std::pow(av_z - dest_z, 2));
+      std::string hint = getDirectionHint(av_x, av_y, dest_x, dest_y, avatarStatus.body.orientation);
+      std::ostringstream dist_ss;
+      dist_ss << std::fixed << std::setprecision(2) << dist_dest;
+      guideMsg = base + "\n" + hint + "\nDistance to destination: " + dist_ss.str() + " meters";
       sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
       last_direction_hint_sec_ = now_sec;
     }
@@ -820,17 +845,20 @@ public:
     nodeHandle->declare_parameter("use_llm_rewrite", false);
     nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
     nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
+    nodeHandle->declare_parameter("strict_template_mode", true);
     nodeHandle->declare_parameter("direction_hint_interval_sec", 4.0);
     use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
     llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
     llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
+    strict_template_mode_ = nodeHandle->get_parameter("strict_template_mode").as_bool();
     direction_hint_interval_sec_ = nodeHandle->get_parameter("direction_hint_interval_sec").as_double();
     if (use_llm_rewrite_) {
       llm_client_ = nodeHandle->create_client<human_nav_llm_ros2::srv::RewriteGuidance>(
         llm_service_name_);
       RCLCPP_INFO(
         nodeHandle->get_logger(),
-        "use_llm_rewrite=true, service=%s timeout=%.2fs",
+        "use_llm_rewrite=true, strict_template_mode=%s, service=%s timeout=%.2fs",
+        strict_template_mode_ ? "true" : "false",
         llm_service_name_.c_str(),
         llm_timeout_sec_);
     } else {
@@ -847,9 +875,9 @@ public:
 
       if (pending_polish_) {
         const std::string ctx = buildContextJson();
-        const std::string draft_pick  = initial_location;
-        const std::string draft_place = final_location;
-        if (use_llm_rewrite_) {
+        const std::string draft_pick  = buildStrictPickTemplate();
+        const std::string draft_place = buildStrictPlaceTemplate();
+        if (use_llm_rewrite_ && !strict_template_mode_) {
           polished_pick_base_  = polishGuidance(draft_pick, "pick", ctx);
           polished_place_base_ = polishGuidance(draft_place, "place", ctx);
         } else {
@@ -887,6 +915,8 @@ public:
           if (isTaskInfoReceived)
           {
             RCLCPP_INFO(nodeHandle->get_logger(), "Task Received");
+            // session start 后立即朝目标物品方向转向
+            moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
             isRequestReceived = true;
             avatar_timer      = nodeHandle->now().seconds();
             step++;
@@ -912,18 +942,33 @@ public:
                 rclcpp::spin_some(nodeHandle);
               }
 
+              // 抓取正确后立即朝第三阶段目的地方向转向，给受试者即时方向提示
+              moveBaseJointTrajectory(
+                pub_base_trajectory_,
+                0.0, 0.0,
+                direction_target_direction,
+                5.0);
+
               step             = GuideForPlacement;
               isRequestReceived = true;
+              last_wrong_object_name_.clear();
               break;
             }
             else if (!avatarStatus.object_in_left_hand.empty() ||
                      !avatarStatus.object_in_right_hand.empty())
             {
-              guideMsg = "This is not the object, Please try again!";
-              while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
+              const std::string wrong_object = !avatarStatus.object_in_left_hand.empty()
+                                             ? avatarStatus.object_in_left_hand
+                                             : avatarStatus.object_in_right_hand;
+              if (wrong_object != last_wrong_object_name_)
               {
-                RCLCPP_INFO(nodeHandle->get_logger(), "still waiting_2");
-                rclcpp::spin_some(nodeHandle);
+                guideMsg = "This is not the object, Please try again!";
+                while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
+                {
+                  RCLCPP_INFO(nodeHandle->get_logger(), "still waiting_2");
+                  rclcpp::spin_some(nodeHandle);
+                }
+                last_wrong_object_name_ = wrong_object;
               }
               break;
             }
@@ -966,6 +1011,13 @@ public:
         case GuideForPlacement:
         {
           RCLCPP_INFO(nodeHandle->get_logger(), "GuideForPlacement");
+
+          // A: 放置阶段也持续请求 avatar status，保证方位/距离提示可持续更新
+          if (nodeHandle->now().seconds() - avatar_timer > 0.100)
+          {
+            sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
+            avatar_timer = nodeHandle->now().seconds();
+          }
 
           if (isRequestReceived)
           {
@@ -1038,6 +1090,147 @@ std::string HumanNavigationSample::escapeJsonString(const std::string & s)
   return o;
 }
 
+std::string HumanNavigationSample::toReadableName(const std::string & name)
+{
+  std::string s = name;
+  while (!s.empty() && std::isdigit(static_cast<unsigned char>(s.back())))
+  {
+    s.pop_back();
+  }
+  if (!s.empty() && s.back() == '_')
+  {
+    s.pop_back();
+  }
+  std::replace(s.begin(), s.end(), '_', ' ');
+  return s;
+}
+
+std::string HumanNavigationSample::toLowerAscii(std::string s)
+{
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return s;
+}
+
+std::string HumanNavigationSample::nearestFurnitureName(double x, double y, double z) const
+{
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
+  size_t idx = 0;
+  double best = 1e12;
+  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
+    const auto & f = taskInfo.furniture[i];
+    const double d = std::sqrt(
+      std::pow(x - f.position.x, 2) +
+      std::pow(y - f.position.y, 2) +
+      std::pow(z - f.position.z, 2));
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  return "the " + toReadableName(taskInfo.furniture[idx].name);
+}
+
+std::string HumanNavigationSample::nearestNonTargetName(
+  double x, double y, double z,
+  const std::string & avoid_type_lower,
+  double max_distance_m,
+  const std::string & avoid_phrase_lower) const
+{
+  if (taskInfo.non_target_objects.empty()) {
+    return "";
+  }
+  size_t idx = 0;
+  double best = 1e12;
+  bool found = false;
+  for (size_t i = 0; i < taskInfo.non_target_objects.size(); ++i) {
+    const auto & o = taskInfo.non_target_objects[i];
+    const double d = std::sqrt(
+      std::pow(x - o.position.x, 2) +
+      std::pow(y - o.position.y, 2) +
+      std::pow(z - o.position.z, 2));
+    if (d > max_distance_m) {
+      continue;
+    }
+    const std::string cand = "the " + toReadableName(o.name);
+    const std::string cand_lower = toLowerAscii(cand);
+    // 规则1：near 后不要重复同类物品（如 apple near apple）
+    if (!avoid_type_lower.empty() && cand_lower == avoid_type_lower) {
+      continue;
+    }
+    // 额外保护：避免出现包含目的地词的融合短语
+    if (!avoid_phrase_lower.empty() &&
+        cand_lower.find(avoid_phrase_lower) != std::string::npos) {
+      continue;
+    }
+    if (d < best) {
+      best = d;
+      idx = i;
+      found = true;
+    }
+  }
+  if (!found) {
+    return "";
+  }
+  return "the " + toReadableName(taskInfo.non_target_objects[idx].name);
+}
+
+std::string HumanNavigationSample::buildStrictPickTemplate() const
+{
+  const std::string target = "the " + toReadableName(taskInfo.target_object.name);
+  const std::string place = nearestFurnitureName(
+    taskInfo.target_object.position.x,
+    taskInfo.target_object.position.y,
+    taskInfo.target_object.position.z);
+  const std::string nearby = nearestNonTargetName(
+    taskInfo.target_object.position.x,
+    taskInfo.target_object.position.y,
+    taskInfo.target_object.position.z,
+    toLowerAscii(target),
+    2.0);
+
+  if (!place.empty() && !nearby.empty()) {
+    return "Please grab " + target + " on " + place + " near " + nearby +
+           ",where the robot points.";
+  }
+  if (!place.empty()) {
+    return "Please grab " + target + " on " + place + ",where the robot points.";
+  }
+  if (!nearby.empty()) {
+    return "Please grab " + target + " near " + nearby + ",where the robot points.";
+  }
+  return "Please grab " + target + ",where the robot points.";
+}
+
+std::string HumanNavigationSample::buildStrictPlaceTemplate() const
+{
+  const std::string place = nearestFurnitureName(
+    taskInfo.destination.position.x,
+    taskInfo.destination.position.y,
+    taskInfo.destination.position.z);
+  const std::string nearby = nearestNonTargetName(
+    taskInfo.destination.position.x,
+    taskInfo.destination.position.y,
+    taskInfo.destination.position.z,
+    toLowerAscii("the " + toReadableName(taskInfo.target_object.name)),
+    2.0,
+    toLowerAscii(place));
+
+  if (!place.empty() && !nearby.empty()) {
+    return "Please place it on " + place + " near " + nearby + ",where the robot points.";
+  }
+  if (!place.empty()) {
+    return "Please place it on " + place + ",where the robot points.";
+  }
+  if (!nearby.empty()) {
+    return "Please place it near " + nearby + ",where the robot points.";
+  }
+  return "Please place it where the robot points.";
+}
+
 std::string HumanNavigationSample::getDirectionHint(
   double av_x, double av_y,
   double target_x, double target_y,
@@ -1049,7 +1242,7 @@ std::string HumanNavigationSample::getDirectionHint(
 
   constexpr double NEAR_THRESHOLD = 0.5;
   if (dist < NEAR_THRESHOLD) {
-    return "Right here.";
+    return "It's right here.";
   }
 
   tf2::Quaternion tf_q;
@@ -1066,10 +1259,11 @@ std::string HumanNavigationSample::getDirectionHint(
 
   const double deg45 = M_PI / 4.0;
   const double deg135 = 3.0 * M_PI / 4.0;
-  if (rel >= -deg45 && rel <= deg45) return "Forward.";
-  if (rel > deg45 && rel <= deg135) return "Right.";
-  if (rel < -deg45 && rel >= -deg135) return "Left.";
-  return "Backward.";
+  if (rel >= -deg45 && rel <= deg45) return "Go forward.";
+  // 坐标系与受试者体感方向相反，左右提示在此交换
+  if (rel > deg45 && rel <= deg135) return "Go left.";
+  if (rel < -deg45 && rel >= -deg135) return "Go right.";
+  return "Go backward.";
 }
 
 std::string HumanNavigationSample::buildContextJson() const
@@ -1115,7 +1309,48 @@ std::string HumanNavigationSample::polishGuidance(
     return truncateUtf8(draft, 400);
   }
 
-  return truncateUtf8(response->rewritten, 400);
+  const std::string rewritten = truncateUtf8(response->rewritten, 400);
+
+  // D: output guardrail. If rewritten text does not match the expected stage pattern, fallback to draft.
+  auto toLower = [](std::string s) {
+      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+      return s;
+    };
+  const std::string low = toLower(rewritten);
+  const std::string phase_low = toLower(phase);
+
+  bool valid = true;
+  if (phase_low == "pick") {
+    const bool has_prefix = low.find("please grab the") != std::string::npos;
+    const bool has_relation = (low.find(" on ") != std::string::npos) ||
+                              (low.find(" near ") != std::string::npos) ||
+                              (low.find(" in ") != std::string::npos);
+    valid = has_prefix && has_relation;
+  } else if (phase_low == "place") {
+    const bool has_prefix = low.find("please place it") != std::string::npos;
+    const bool has_relation = (low.find(" on ") != std::string::npos) ||
+                              (low.find(" near ") != std::string::npos) ||
+                              (low.find(" in ") != std::string::npos);
+    const bool has_pointing = low.find("where the robot points") != std::string::npos;
+    // 强制 near 子句采用逗号分隔，避免 "near the coffee set mota table" 这类融合短语
+    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
+                                (low.find(", near ") != std::string::npos);
+    const bool known_fused_phrase =
+      low.find("near the coffee set mota table") != std::string::npos;
+    valid = has_prefix && has_relation && has_pointing && near_clause_ok && !known_fused_phrase;
+  }
+
+  if (!valid) {
+    RCLCPP_WARN(
+      nodeHandle->get_logger(),
+      "LLM rewrite rejected by stage guardrail (phase=%s), using draft",
+      phase.c_str());
+    return truncateUtf8(draft, 400);
+  }
+
+  return rewritten;
 }
 
 int main(int argc, char ** argv)

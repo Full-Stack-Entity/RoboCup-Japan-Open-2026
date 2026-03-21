@@ -5,9 +5,10 @@
 
 ## 运行
 
-1. 本机启动 Ollama，并 `ollama pull` 与参数 `model` 一致的模型（默认 `llama3.2:3b`）。
-2. `source install/setup.bash`
-3. `ros2 run human_nav_llm_ros2 rewrite_guidance_node`
+1. 本机启动 Ollama，并 `ollama pull` 与参数 `model` 一致的模型。
+sudo systemctl start ollama 
+2. source install/setup.bash
+3. ros2 launch human_nav_ros2 sample_launch.py enable_llm_rewrite:=true 
 
 ## 参数
 
