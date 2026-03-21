@@ -8,14 +8,21 @@ Full-stack launch for Interactive Cleanup:
   - Nav2 stack (optional, default on)
   - RViz2 (optional, default off)
 """
+import math
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, GroupAction
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution
+
+# Robot initial pose in map frame (from Unity scene: x=-2.0, z=-3.5, yaw≈90°)
+ROBOT_INIT_X = -2.0
+ROBOT_INIT_Y = -3.5
+ROBOT_INIT_YAW = math.pi / 2.0  # 90 degrees, facing +Y
 
 
 def generate_launch_description():
@@ -30,7 +37,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'ros_bridge_port', default_value='9090'),
         DeclareLaunchArgument(
-            'use_sim_time', default_value='true'),
+            'use_sim_time', default_value='false'),
         DeclareLaunchArgument(
             'use_nav2', default_value='true',
             description='Launch Nav2 navigation stack'),
@@ -86,6 +93,40 @@ def generate_launch_description():
         }.items(),
     )
 
+    # ---- TF placeholders ----
+    # map→odom: static (AMCL will take over once it receives laser scans)
+    static_tf_map_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_tf_map_odom',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--qx', '0', '--qy', '0', '--qz', '0', '--qw', '1',
+            '--frame-id', 'map', '--child-frame-id', 'odom',
+        ],
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }],
+    )
+
+    # odom→base_footprint: DYNAMIC (published on /tf, not /tf_static)
+    # so SIGVerse bridge can seamlessly override it once connected.
+    placeholder_tf = Node(
+        package='interactive_cleanup',
+        executable='placeholder_tf_publisher.py',
+        name='placeholder_tf_odom_base',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'parent_frame': 'odom',
+            'child_frame': 'base_footprint',
+            'x': ROBOT_INIT_X,
+            'y': ROBOT_INIT_Y,
+            'z': 0.0,
+            'yaw': ROBOT_INIT_YAW,
+            'rate': 2.0,
+        }],
+    )
+
     # ---- Nav2 (conditional) ----
     nav2_launch = GroupAction(
         condition=IfCondition(LaunchConfiguration('use_nav2')),
@@ -121,6 +162,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         args + [
+            static_tf_map_odom,
+            placeholder_tf,
             cleanup_node,
             vision_node,
             sigverse_bridge,

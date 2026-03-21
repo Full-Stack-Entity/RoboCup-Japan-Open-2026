@@ -232,9 +232,8 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
     {
       sensor_msgs::msg::CameraInfo cameraInfo;
 
-      int32_t sec  = bsonView["msg"]["header"]["stamp"]["sec"]    .get_int32();
-      int32_t nsec = bsonView["msg"]["header"]["stamp"]["nanosec"].get_int32(); // get_uint32() is not available; use get_int32() and cast if safe.
-      cameraInfo.header.stamp = rclcpp::Time(static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec));
+      // Always use wall-clock time (ignore Unity timestamps to avoid time-sync issues)
+      cameraInfo.header.stamp = node->get_clock()->now();
       cameraInfo.header.frame_id   = std::string(bsonView["msg"]["header"]["frame_id"].get_string().value);
 
       cameraInfo.height            = (uint32_t)  bsonView["msg"]["height"].get_int32();
@@ -264,9 +263,8 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
     {
       sensor_msgs::msg::Image image;
 
-      int32_t sec  = bsonView["msg"]["header"]["stamp"]["sec"]    .get_int32();
-      int32_t nsec = bsonView["msg"]["header"]["stamp"]["nanosec"].get_int32(); // get_uint32() is not available; use get_int32() and cast if safe.
-      image.header.stamp = rclcpp::Time(static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec));
+      // Always use wall-clock time
+      image.header.stamp = node->get_clock()->now();
       image.header.frame_id   = std::string(bsonView["msg"]["header"]["frame_id"].get_string().value);
       image.height            = (uint32_t)  bsonView["msg"]["height"]      .get_int32();
       image.width             = (uint32_t)  bsonView["msg"]["width"]       .get_int32();
@@ -285,9 +283,8 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
     {
       sensor_msgs::msg::LaserScan laserScan;
 
-      int32_t sec  = bsonView["msg"]["header"]["stamp"]["sec"]    .get_int32();
-      int32_t nsec = bsonView["msg"]["header"]["stamp"]["nanosec"].get_int32(); // get_uint32() is not available; use get_int32() and cast if safe.
-      laserScan.header.stamp = rclcpp::Time(static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec));
+      // Always use wall-clock time
+      laserScan.header.stamp = node->get_clock()->now();
       laserScan.header.frame_id   = std::string(bsonView["msg"]["header"]["frame_id"].get_string().value);
 
       laserScan.angle_min       = (float)bsonView["msg"]["angle_min"]      .get_double();
@@ -351,17 +348,12 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
       for(auto itr = tfArrayView.cbegin(); itr != tfArrayView.cend(); ++itr)
       {
         std::string frameId      = std::string((*itr)["header"]["frame_id"].get_string().value);
-        int32_t sec              =             (*itr)["header"]["stamp"]["sec"]    .get_int32();
-        int32_t nsec             =             (*itr)["header"]["stamp"]["nanosec"].get_int32(); // get_uint32() is not available; use get_int32() and cast if safe.
         std::string childFrameId = std::string((*itr)["child_frame_id"]    .get_string().value);
 
         geometry_msgs::msg::TransformStamped stampedTransform;
 
-        if (sec == 0) {
-          stampedTransform.header.stamp = node->get_clock()->now();
-        } else {
-          stampedTransform.header.stamp = rclcpp::Time(static_cast<uint64_t>(sec) * 1000000000ULL + static_cast<uint64_t>(nsec));
-        }
+        // Always use wall-clock time to avoid time-sync issues with Nav2
+        stampedTransform.header.stamp = node->get_clock()->now();
         stampedTransform.header.frame_id = frameId;
         stampedTransform.child_frame_id = childFrameId;
 

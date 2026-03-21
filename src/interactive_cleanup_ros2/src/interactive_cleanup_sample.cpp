@@ -1065,7 +1065,16 @@ private:
   {
     if (nav_goal_sent_) return;
     RCLCPP_INFO(this->get_logger(), "Waiting for Nav2 action server (up to 10s)...");
-    if (!nav_client_->wait_for_action_server(10s)) {
+
+    // Non-blocking wait: check in 1s intervals so Ctrl+C is responsive
+    bool server_ready = false;
+    for (int i = 0; i < 10 && rclcpp::ok(); ++i) {
+      if (nav_client_->wait_for_action_server(1s)) {
+        server_ready = true;
+        break;
+      }
+    }
+    if (!server_ready) {
       RCLCPP_WARN(this->get_logger(),
                   "Nav2 action server not available after 10s, falling back to direct drive");
       nav2_available_ = false;
@@ -1697,6 +1706,12 @@ int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<InteractiveCleanupSample>();
+
+  // Ensure Ctrl+C triggers clean shutdown
+  rclcpp::on_shutdown([node]() {
+    RCLCPP_INFO(node->get_logger(), "Shutdown requested, stopping...");
+  });
+
   int ret = node->run();
   rclcpp::shutdown();
   return ret;
