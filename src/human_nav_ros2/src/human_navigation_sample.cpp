@@ -29,6 +29,7 @@
 #include <sstream>
 #include <chrono>
 #include <cctype>
+#include <vector>
 
 class HumanNavigationSample
 {
@@ -147,7 +148,9 @@ private:
 
   /// 方位提示节流：上次发送时间(秒)、间隔秒数（规则要求≤15条，不再实时距离）
   double last_direction_hint_sec_{0.0};
-  double direction_hint_interval_sec_{4.0};
+  double direction_hint_interval_sec_{7.0};
+  /// 抓取正确提示后，字幕保持到该时间点（秒）；期间禁止新字幕覆盖
+  double subtitle_hold_until_sec_{0.0};
   std::string last_wrong_object_name_;
 
   std::string getDirectionHint(
@@ -156,12 +159,22 @@ private:
     const geometry_msgs::msg::Quaternion & body_orient) const;
   static std::string toReadableName(const std::string & name);
   static std::string toLowerAscii(std::string s);
+  static bool isLargeLandmarkName(const std::string & readable_name_lower);
+  static bool isRefrigeratorName(const std::string & readable_name_lower);
+  /// 基于 getFurnitureRelation 的空间判断，返回 "on/in/near the X"（仅来自 furniture，不掺入 non_target）
+  std::string getRelationPhraseForPosition(double dx, double dy, double dz,
+                                          double size_x, double size_y, double size_z) const;
   std::string nearestFurnitureName(double x, double y, double z) const;
-  std::string nearestNonTargetName(
+  std::string nearestLargeLandmarkName(
     double x, double y, double z,
-    const std::string & avoid_type_lower,
+    double min_distance_m,
     double max_distance_m,
-    const std::string & avoid_phrase_lower = "") const;
+    const std::string & avoid_name_lower = "") const;
+  std::string nearestNearLandmarkName(
+    double x, double y, double z,
+    double min_distance_m,
+    double max_distance_m,
+    const std::string & avoid_name_lower = "") const;
   std::string buildStrictPickTemplate() const;
   std::string buildStrictPlaceTemplate() const;
 
@@ -199,6 +212,7 @@ private:
     polished_place_base_.clear();
     pending_polish_ = false;
     last_direction_hint_sec_ = 0.0;
+    subtitle_hold_until_sec_ = 0.0;
     last_wrong_object_name_.clear();
   }
 
@@ -409,7 +423,7 @@ private:
                                    double dx, double dy, double dz,
                                    double fx_min, double fx_max,
                                    double fy_min, double fy_max,
-                                   double fz_min, double fz_max)
+                                   double fz_min, double fz_max) const
   {
     // 判断家具类型，与 ROS1 2025 版完全一致
     if (furniture_name.find("table") != std::string::npos)
@@ -698,6 +712,15 @@ private:
 
     // 规则≤15条：取消实时距离，改为每隔 N 秒在骨架句后追加方位提示（Forward/Left/Right/Backward/Right here）
     const double now_sec = nodeHandle->now().seconds();
+    // 抓取正确后保留字幕3秒，避免被新的周期字幕立刻覆盖
+    if (subtitle_hold_until_sec_ > 0.0) {
+      if (now_sec < subtitle_hold_until_sec_) {
+        return;
+      }
+      // 保持窗口结束：重置计时起点，确保下一条周期字幕按完整间隔触发
+      subtitle_hold_until_sec_ = 0.0;
+      last_direction_hint_sec_ = now_sec;
+    }
     const bool interval_elapsed = (now_sec - last_direction_hint_sec_) >= direction_hint_interval_sec_;
 
     if (step == GuideForTakingObject && interval_elapsed)
@@ -846,7 +869,7 @@ public:
     nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
     nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
     nodeHandle->declare_parameter("strict_template_mode", true);
-    nodeHandle->declare_parameter("direction_hint_interval_sec", 4.0);
+    nodeHandle->declare_parameter("direction_hint_interval_sec", 7.0);
     use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
     llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
     llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
@@ -941,6 +964,9 @@ public:
                 RCLCPP_INFO(nodeHandle->get_logger(), "still waiting");
                 rclcpp::spin_some(nodeHandle);
               }
+              // 该提示保留3秒，期间字幕更新计时器视为0，防止立即被覆盖
+              last_direction_hint_sec_ = 0.0;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 3.0;
 
               // 抓取正确后立即朝第三阶段目的地方向转向，给受试者即时方向提示
               moveBaseJointTrajectory(
@@ -1113,6 +1139,66 @@ std::string HumanNavigationSample::toLowerAscii(std::string s)
   return s;
 }
 
+bool HumanNavigationSample::isLargeLandmarkName(const std::string & readable_name_lower)
+{
+  static const std::vector<std::string> kKeywords = {
+    "table", "desk", "counter", "cabinet", "cupboard",
+    "drawer", "shelf", "wardrobe", "refrigerator", "fridge"};
+  for (const auto & kw : kKeywords) {
+    if (readable_name_lower.find(kw) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HumanNavigationSample::isRefrigeratorName(const std::string & readable_name_lower)
+{
+  return readable_name_lower.find("refrigerator") != std::string::npos ||
+         readable_name_lower.find("fridge") != std::string::npos;
+}
+
+std::string HumanNavigationSample::getRelationPhraseForPosition(
+  double dx, double dy, double dz,
+  double size_x, double size_y, double size_z) const
+{
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
+  int idx = 0;
+  float best = 999999999.0f;
+  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
+    const auto & f = taskInfo.furniture[i];
+    float d = static_cast<float>(std::sqrt(
+      std::pow(dx - f.position.x, 2) +
+      std::pow(dy - f.position.y, 2) +
+      std::pow(dz - f.position.z, 2)));
+    if (d < best) {
+      best = d;
+      idx = static_cast<int>(i);
+    }
+  }
+  const auto & fn = taskInfo.furniture[idx];
+  double fx = fn.position.x, fy = fn.position.y, fz = fn.position.z;
+  double fx_min = fx - std::abs(size_x) / 2.0;
+  double fx_max = fx + std::abs(size_x) / 2.0;
+  double fy_min = fy - std::abs(size_y) / 2.0;
+  double fy_max = fy + std::abs(size_y) / 2.0;
+  double fz_min = fz - std::abs(size_z);
+  double fz_max = fz + std::abs(size_z);
+
+  std::string furniture_name = fn.name;
+  std::replace(furniture_name.begin(), furniture_name.end(), '_', ' ');
+
+  bool within = (dx <= fx_max && dx >= fx_min && dy <= fy_max && dy >= fy_min);
+  if (within) {
+    return getFurnitureRelation(
+      furniture_name, dx, dy, dz,
+      fx_min, fx_max, fy_min, fy_max, fz_min, fz_max);
+  }
+  return "near the " + furniture_name;
+}
+
 std::string HumanNavigationSample::nearestFurnitureName(double x, double y, double z) const
 {
   if (taskInfo.furniture.empty()) {
@@ -1134,70 +1220,128 @@ std::string HumanNavigationSample::nearestFurnitureName(double x, double y, doub
   return "the " + toReadableName(taskInfo.furniture[idx].name);
 }
 
-std::string HumanNavigationSample::nearestNonTargetName(
+std::string HumanNavigationSample::nearestLargeLandmarkName(
   double x, double y, double z,
-  const std::string & avoid_type_lower,
+  double min_distance_m,
   double max_distance_m,
-  const std::string & avoid_phrase_lower) const
+  const std::string & avoid_name_lower) const
 {
-  if (taskInfo.non_target_objects.empty()) {
-    return "";
-  }
-  size_t idx = 0;
+  std::string best_name;
   double best = 1e12;
-  bool found = false;
-  for (size_t i = 0; i < taskInfo.non_target_objects.size(); ++i) {
-    const auto & o = taskInfo.non_target_objects[i];
+
+  auto consider_name = [&](const std::string & raw_name, double ox, double oy, double oz) {
     const double d = std::sqrt(
-      std::pow(x - o.position.x, 2) +
-      std::pow(y - o.position.y, 2) +
-      std::pow(z - o.position.z, 2));
-    if (d > max_distance_m) {
-      continue;
+      std::pow(x - ox, 2) +
+      std::pow(y - oy, 2) +
+      std::pow(z - oz, 2));
+    if (d < min_distance_m || d > max_distance_m) {
+      return;
     }
-    const std::string cand = "the " + toReadableName(o.name);
+    const std::string readable = toReadableName(raw_name);
+    const std::string readable_lower = toLowerAscii(readable);
+    if (!isLargeLandmarkName(readable_lower)) {
+      return;
+    }
+    const std::string cand = "the " + readable;
     const std::string cand_lower = toLowerAscii(cand);
-    // 规则1：near 后不要重复同类物品（如 apple near apple）
-    if (!avoid_type_lower.empty() && cand_lower == avoid_type_lower) {
-      continue;
-    }
-    // 额外保护：避免出现包含目的地词的融合短语
-    if (!avoid_phrase_lower.empty() &&
-        cand_lower.find(avoid_phrase_lower) != std::string::npos) {
-      continue;
+    if (!avoid_name_lower.empty() && cand_lower == avoid_name_lower) {
+      return;
     }
     if (d < best) {
       best = d;
-      idx = i;
-      found = true;
+      best_name = cand;
     }
+  };
+
+  for (const auto & f : taskInfo.furniture) {
+    consider_name(f.name, f.position.x, f.position.y, f.position.z);
   }
-  if (!found) {
+  for (const auto & o : taskInfo.non_target_objects) {
+    consider_name(o.name, o.position.x, o.position.y, o.position.z);
+  }
+  return best_name;
+}
+
+// near sth：以中心点(x,y,z)为基准，在 min~max 米内扫描所有大型不可交互物品，
+// 记录最近的两项；若最近的一项与 on 后的物品重合，则用第二近的
+std::string HumanNavigationSample::nearestNearLandmarkName(
+  double x, double y, double z,
+  double min_distance_m,
+  double max_distance_m,
+  const std::string & avoid_name_lower) const
+{
+  double d1 = 1e12, d2 = 1e12;
+  std::string name1, name2;
+
+  auto consider = [&](const std::string & raw_name, double ox, double oy, double oz) {
+    const double d = std::sqrt(
+      std::pow(x - ox, 2) + std::pow(y - oy, 2) + std::pow(z - oz, 2));
+    if (d < min_distance_m || d > max_distance_m) {
+      return;
+    }
+    const std::string readable = toReadableName(raw_name);
+    const std::string cand = "the " + readable;
+    const std::string cand_lower = toLowerAscii(cand);
+    if (!isLargeLandmarkName(cand_lower)) {
+      return;  // 仅大型不可交互：table, cabinet, shelf, refrigerator 等
+    }
+    // 只记录“不同物品名”的前两近，避免同名占据第1/第2导致误选
+    if (!name1.empty() && cand_lower == toLowerAscii(name1)) {
+      return;
+    }
+    if (d < d1) {
+      d2 = d1;
+      name2 = name1;
+      d1 = d;
+      name1 = cand;
+    } else if (d < d2) {
+      d2 = d;
+      name2 = cand;
+    }
+  };
+
+  for (const auto & f : taskInfo.furniture) {
+    consider(f.name, f.position.x, f.position.y, f.position.z);
+  }
+  for (const auto & o : taskInfo.non_target_objects) {
+    consider(o.name, o.position.x, o.position.y, o.position.z);
+  }
+
+  if (name1.empty()) {
     return "";
   }
-  return "the " + toReadableName(taskInfo.non_target_objects[idx].name);
+  if (avoid_name_lower.empty() || toLowerAscii(name1) != avoid_name_lower) {
+    return name1;  // 最近的一项不与 on 重合，用最近的
+  }
+  if (!name2.empty() && toLowerAscii(name2) != avoid_name_lower) {
+    return name2;  // 最近的一项与 on 重合，用第二近的（且第二近也不与 on 重合）
+  }
+  return "";  // 第二近也为空或与 on 重合，不加 near
 }
 
 std::string HumanNavigationSample::buildStrictPickTemplate() const
 {
   const std::string target = "the " + toReadableName(taskInfo.target_object.name);
-  const std::string place = nearestFurnitureName(
-    taskInfo.target_object.position.x,
-    taskInfo.target_object.position.y,
-    taskInfo.target_object.position.z);
-  const std::string nearby = nearestNonTargetName(
-    taskInfo.target_object.position.x,
-    taskInfo.target_object.position.y,
-    taskInfo.target_object.position.z,
-    toLowerAscii(target),
-    2.0);
+  const double tx = taskInfo.target_object.position.x;
+  const double ty = taskInfo.target_object.position.y;
+  const double tz = taskInfo.target_object.position.z;
+  // 抓取模板严格固定为: "Please grab <target> on <A>, near <B>..."
+  // 因此这里强制主介词为 on，仅取 furniture 名词位，避免出现 "near ..., near ..."
+  std::string on_target = nearestFurnitureName(tx, ty, tz);  // "the <furniture>"
+  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
+  std::string avoid;
+  if (!on_phrase.empty()) {
+    const size_t pos = on_phrase.find("the ");
+    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
+  }
+  std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, avoid);
 
-  if (!place.empty() && !nearby.empty()) {
-    return "Please grab " + target + " on " + place + " near " + nearby +
+  if (!on_phrase.empty() && !nearby.empty()) {
+    return "Please grab " + target + " " + on_phrase + ", near " + nearby +
            ",where the robot points.";
   }
-  if (!place.empty()) {
-    return "Please grab " + target + " on " + place + ",where the robot points.";
+  if (!on_phrase.empty()) {
+    return "Please grab " + target + " " + on_phrase + ",where the robot points.";
   }
   if (!nearby.empty()) {
     return "Please grab " + target + " near " + nearby + ",where the robot points.";
@@ -1207,23 +1351,25 @@ std::string HumanNavigationSample::buildStrictPickTemplate() const
 
 std::string HumanNavigationSample::buildStrictPlaceTemplate() const
 {
-  const std::string place = nearestFurnitureName(
-    taskInfo.destination.position.x,
-    taskInfo.destination.position.y,
-    taskInfo.destination.position.z);
-  const std::string nearby = nearestNonTargetName(
-    taskInfo.destination.position.x,
-    taskInfo.destination.position.y,
-    taskInfo.destination.position.z,
-    toLowerAscii("the " + toReadableName(taskInfo.target_object.name)),
-    2.0,
-    toLowerAscii(place));
-
-  if (!place.empty() && !nearby.empty()) {
-    return "Please place it on " + place + " near " + nearby + ",where the robot points.";
+  const double dx = taskInfo.destination.position.x;
+  const double dy = taskInfo.destination.position.y;
+  const double dz = taskInfo.destination.position.z;
+  // 放置模板严格固定为: "Please place it on <A>, near <B>..."
+  // 强制主介词为 on，仅取 furniture 名词位，避免出现 "place it near ..."
+  std::string on_target = nearestFurnitureName(dx, dy, dz);  // "the <furniture>"
+  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
+  std::string avoid;
+  if (!on_phrase.empty()) {
+    const size_t pos = on_phrase.find("the ");
+    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
   }
-  if (!place.empty()) {
-    return "Please place it on " + place + ",where the robot points.";
+  std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, avoid);
+
+  if (!on_phrase.empty() && !nearby.empty()) {
+    return "Please place it " + on_phrase + ", near " + nearby + ",where the robot points.";
+  }
+  if (!on_phrase.empty()) {
+    return "Please place it " + on_phrase + ",where the robot points.";
   }
   if (!nearby.empty()) {
     return "Please place it near " + nearby + ",where the robot points.";
@@ -1268,9 +1414,26 @@ std::string HumanNavigationSample::getDirectionHint(
 
 std::string HumanNavigationSample::buildContextJson() const
 {
+  const double tx = taskInfo.target_object.position.x;
+  const double ty = taskInfo.target_object.position.y;
+  const double tz = taskInfo.target_object.position.z;
+  const double dx = taskInfo.destination.position.x;
+  const double dy = taskInfo.destination.position.y;
+  const double dz = taskInfo.destination.position.z;
+
+  std::string pick_on = nearestFurnitureName(tx, ty, tz);   // "the <furniture>"
+  std::string place_on = nearestFurnitureName(dx, dy, dz);
+
+  std::string pick_near = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, toLowerAscii(pick_on));
+  std::string place_near = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, toLowerAscii(place_on));
+
   std::ostringstream oss;
   oss << "{\"environment_id\":\"" << escapeJsonString(taskInfo.environment_id) << "\""
-      << ",\"target_prefab\":\"" << escapeJsonString(taskInfo.target_object.name) << "\"}";
+      << ",\"target_prefab\":\"" << escapeJsonString(taskInfo.target_object.name) << "\""
+      << ",\"pick_on\":\"" << escapeJsonString(pick_on) << "\""
+      << ",\"pick_near\":\"" << escapeJsonString(pick_near) << "\""
+      << ",\"place_on\":\"" << escapeJsonString(place_on) << "\""
+      << ",\"place_near\":\"" << escapeJsonString(place_near) << "\"}";
   return oss.str();
 }
 
@@ -1322,24 +1485,26 @@ std::string HumanNavigationSample::polishGuidance(
   const std::string phase_low = toLower(phase);
 
   bool valid = true;
-  if (phase_low == "pick") {
+  // 禁止两物品拼接：如 cafe set + mota table -> "cafe set mota table"
+  const bool fused_items = (low.find("set mota") != std::string::npos) ||
+                          (low.find("coffee set mota") != std::string::npos) ||
+                          (low.find("cafe set mota") != std::string::npos) ||
+                          (low.find("desk lamp") != std::string::npos);
+  if (fused_items) {
+    valid = false;
+  } else if (phase_low == "pick") {
     const bool has_prefix = low.find("please grab the") != std::string::npos;
-    const bool has_relation = (low.find(" on ") != std::string::npos) ||
-                              (low.find(" near ") != std::string::npos) ||
-                              (low.find(" in ") != std::string::npos);
-    valid = has_prefix && has_relation;
-  } else if (phase_low == "place") {
-    const bool has_prefix = low.find("please place it") != std::string::npos;
-    const bool has_relation = (low.find(" on ") != std::string::npos) ||
-                              (low.find(" near ") != std::string::npos) ||
-                              (low.find(" in ") != std::string::npos);
-    const bool has_pointing = low.find("where the robot points") != std::string::npos;
-    // 强制 near 子句采用逗号分隔，避免 "near the coffee set mota table" 这类融合短语
+    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
     const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
                                 (low.find(", near ") != std::string::npos);
-    const bool known_fused_phrase =
-      low.find("near the coffee set mota table") != std::string::npos;
-    valid = has_prefix && has_relation && has_pointing && near_clause_ok && !known_fused_phrase;
+    valid = has_prefix && has_on && near_clause_ok;
+  } else if (phase_low == "place") {
+    const bool has_prefix = low.find("please place it") != std::string::npos;
+    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
+    const bool has_pointing = low.find("where the robot points") != std::string::npos;
+    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
+                                (low.find(", near ") != std::string::npos);
+    valid = has_prefix && has_on && has_pointing && near_clause_ok;
   }
 
   if (!valid) {
