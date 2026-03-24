@@ -746,8 +746,9 @@ private:
     else if (step == GuideForPlacement && interval_elapsed)
     {
       sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-      const std::string base = polished_place_base_.empty() ? truncateUtf8(final_location, 400)
-                                                           : polished_place_base_;
+      const std::string base = polished_place_base_.empty()
+        ? truncateUtf8(buildStrictPlaceTemplate(), 400)
+        : polished_place_base_;
       const double av_x = avatarStatus.body.position.x;
       const double av_y = avatarStatus.body.position.y;
       const double av_z = avatarStatus.body.position.z;
@@ -1047,17 +1048,36 @@ public:
 
           if (isRequestReceived)
           {
+            const double now_sec = nodeHandle->now().seconds();
+            // 抓取正确提示后的3秒保持窗口：不发送任何新提示词，避免覆盖
+            if (subtitle_hold_until_sec_ > 0.0 && now_sec < subtitle_hold_until_sec_) {
+              break;
+            }
             moveBaseJointTrajectory(
               pub_base_trajectory_,
               0.0, 0.0,
               direction_target_direction,
               5.0);
 
-            // 放置阶段发送“放到哪里”的指令（不能沿用 "Please Keep holding the Object"）
-            guideMsg = polished_place_base_.empty() ? truncateUtf8(final_location, 400)
-                                                   : polished_place_base_;
-            // 直接发送一次，确保 Unity 立即显示，不依赖 TTS 状态
+            // 放置阶段：hold 后直接发带距离的提示，不发纯模板（无距离）
+            sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
+            const std::string base = polished_place_base_.empty()
+              ? truncateUtf8(buildStrictPlaceTemplate(), 400)
+              : polished_place_base_;
+            const double av_x = avatarStatus.body.position.x;
+            const double av_y = avatarStatus.body.position.y;
+            const double av_z = avatarStatus.body.position.z;
+            const double dest_x = taskInfo.destination.position.x;
+            const double dest_y = taskInfo.destination.position.y;
+            const double dest_z = taskInfo.destination.position.z;
+            const double dist_dest = std::sqrt(
+              std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2) + std::pow(av_z - dest_z, 2));
+            std::string hint = getDirectionHint(av_x, av_y, dest_x, dest_y, avatarStatus.body.orientation);
+            std::ostringstream dist_ss;
+            dist_ss << std::fixed << std::setprecision(2) << dist_dest;
+            guideMsg = base + "\n" + hint + "\nDistance to destination: " + dist_ss.str() + " meters";
             sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
+            last_direction_hint_sec_ = now_sec;
             isRequestReceived = false;
           }
 
