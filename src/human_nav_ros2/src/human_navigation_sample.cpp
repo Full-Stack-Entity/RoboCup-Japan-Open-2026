@@ -30,6 +30,8 @@
 #include <chrono>
 #include <cctype>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
 
 class HumanNavigationSample
 {
@@ -161,20 +163,22 @@ private:
   static std::string toLowerAscii(std::string s);
   static bool isLargeLandmarkName(const std::string & readable_name_lower);
   static bool isRefrigeratorName(const std::string & readable_name_lower);
+  static std::string extractThePhraseLower(const std::string & phrase);
   /// 基于 getFurnitureRelation 的空间判断，返回 "on/in/near the X"（仅来自 furniture，不掺入 non_target）
   std::string getRelationPhraseForPosition(double dx, double dy, double dz,
                                           double size_x, double size_y, double size_z) const;
   std::string nearestFurnitureName(double x, double y, double z) const;
-  std::string nearestLargeLandmarkName(
-    double x, double y, double z,
-    double min_distance_m,
-    double max_distance_m,
-    const std::string & avoid_name_lower = "") const;
+  /// 抓取阶段 on 槽位：目标物体下方大型不可交互（先 0-2m，失败再扩大范围）
+  std::string buildPickOnSlotPhrase(double px, double py, double pz, const std::unordered_set<std::string> & banned_lower) const;
+  /// 目标点下的家具介词短语：优先 on/in（getRelationPhraseForPosition），否则 on the + 最近家具
+  std::string buildOnSlotPhrase(
+    double px, double py, double pz, double sx, double sy, double sz,
+    const std::unordered_set<std::string> & banned_lower) const;
   std::string nearestNearLandmarkName(
     double x, double y, double z,
     double min_distance_m,
     double max_distance_m,
-    const std::string & avoid_name_lower = "") const;
+    const std::unordered_set<std::string> & banned_lower) const;
   std::string buildStrictPickTemplate() const;
   std::string buildStrictPlaceTemplate() const;
 
@@ -1139,15 +1143,18 @@ std::string HumanNavigationSample::escapeJsonString(const std::string & s)
 std::string HumanNavigationSample::toReadableName(const std::string & name)
 {
   std::string s = name;
-  while (!s.empty() && std::isdigit(static_cast<unsigned char>(s.back())))
+  // Unity 后缀：末尾 _ + 单个大写字母（如 sidetable_A）→ 去掉该段
+  while (s.size() >= 2 && s[s.size() - 2] == '_' &&
+    std::isupper(static_cast<unsigned char>(s.back())))
   {
-    s.pop_back();
-  }
-  if (!s.empty() && s.back() == '_')
-  {
-    s.pop_back();
+    s.resize(s.size() - 2);
   }
   std::replace(s.begin(), s.end(), '_', ' ');
+  while (s.size() >= 2 && s[s.size() - 2] == ' ' &&
+    std::isupper(static_cast<unsigned char>(s.back())))
+  {
+    s.resize(s.size() - 2);
+  }
   return s;
 }
 
@@ -1176,6 +1183,19 @@ bool HumanNavigationSample::isRefrigeratorName(const std::string & readable_name
 {
   return readable_name_lower.find("refrigerator") != std::string::npos ||
          readable_name_lower.find("fridge") != std::string::npos;
+}
+
+std::string HumanNavigationSample::extractThePhraseLower(const std::string & phrase)
+{
+  if (phrase.empty()) {
+    return "";
+  }
+  const std::string low = toLowerAscii(phrase);
+  const size_t pos = low.find("the ");
+  if (pos != std::string::npos) {
+    return low.substr(pos);
+  }
+  return low;
 }
 
 std::string HumanNavigationSample::getRelationPhraseForPosition(
@@ -1207,8 +1227,7 @@ std::string HumanNavigationSample::getRelationPhraseForPosition(
   double fz_min = fz - std::abs(size_z);
   double fz_max = fz + std::abs(size_z);
 
-  std::string furniture_name = fn.name;
-  std::replace(furniture_name.begin(), furniture_name.end(), '_', ' ');
+  const std::string furniture_name = toReadableName(fn.name);
 
   bool within = (dx <= fx_max && dx >= fx_min && dy <= fy_max && dy >= fy_min);
   if (within) {
@@ -1240,103 +1259,167 @@ std::string HumanNavigationSample::nearestFurnitureName(double x, double y, doub
   return "the " + toReadableName(taskInfo.furniture[idx].name);
 }
 
-std::string HumanNavigationSample::nearestLargeLandmarkName(
-  double x, double y, double z,
-  double min_distance_m,
-  double max_distance_m,
-  const std::string & avoid_name_lower) const
+std::string HumanNavigationSample::buildPickOnSlotPhrase(
+  double px, double py, double pz,
+  const std::unordered_set<std::string> & banned_lower) const
 {
-  std::string best_name;
-  double best = 1e12;
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
 
-  auto consider_name = [&](const std::string & raw_name, double ox, double oy, double oz) {
-    const double d = std::sqrt(
-      std::pow(x - ox, 2) +
-      std::pow(y - oy, 2) +
-      std::pow(z - oz, 2));
-    if (d < min_distance_m || d > max_distance_m) {
-      return;
-    }
-    const std::string readable = toReadableName(raw_name);
-    const std::string readable_lower = toLowerAscii(readable);
-    if (!isLargeLandmarkName(readable_lower)) {
-      return;
-    }
+  // 支撑关系优先：抓取前先判断目标物体是否在家具表面/容器内
+  const std::string rel = getRelationPhraseForPosition(px, py, pz, 0.3, 0.3, 0.3);
+  const std::string rel_low = toLowerAscii(rel);
+  const bool is_support_relation =
+    rel_low.rfind("on the ", 0) == 0 ||
+    rel_low.rfind("in the ", 0) == 0 ||
+    rel_low.rfind("inside the ", 0) == 0;
+  if (is_support_relation && banned_lower.count(extractThePhraseLower(rel)) == 0) {
+    return rel;
+  }
+
+  std::string best_within;
+  std::string best_any;
+  double best_within_d = 1e12;
+  double best_any_d = 1e12;
+
+  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
+    const auto & f = taskInfo.furniture[i];
+    const std::string readable = toReadableName(f.name);
     const std::string cand = "the " + readable;
     const std::string cand_lower = toLowerAscii(cand);
-    if (!avoid_name_lower.empty() && cand_lower == avoid_name_lower) {
-      return;
+    if (!isLargeLandmarkName(toLowerAscii(readable)) || banned_lower.count(cand_lower) > 0) {
+      continue;
     }
-    if (d < best) {
-      best = d;
-      best_name = cand;
+    const double d = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2) +
+      std::pow(pz - f.position.z, 2));
+    if (d <= 2.0 && d < best_within_d) {
+      best_within_d = d;
+      best_within = cand;
     }
-  };
+    if (d < best_any_d) {
+      best_any_d = d;
+      best_any = cand;
+    }
+  }
 
-  for (const auto & f : taskInfo.furniture) {
-    consider_name(f.name, f.position.x, f.position.y, f.position.z);
+  if (!best_within.empty()) {
+    return "on " + best_within;
   }
-  for (const auto & o : taskInfo.non_target_objects) {
-    consider_name(o.name, o.position.x, o.position.y, o.position.z);
+  if (!best_any.empty()) {
+    return "on " + best_any;
   }
-  return best_name;
+  return "";
 }
 
-// near sth：以中心点(x,y,z)为基准，在 min~max 米内扫描所有大型不可交互物品，
-// 记录最近的两项；若最近的一项与 on 后的物品重合，则用第二近的
+std::string HumanNavigationSample::buildOnSlotPhrase(
+  double px, double py, double pz,
+  double sx, double sy, double sz,
+  const std::unordered_set<std::string> & banned_lower) const
+{
+  const std::string rel = getRelationPhraseForPosition(px, py, pz, sx, sy, sz);
+  const std::string low = toLowerAscii(rel);
+  if ((low.rfind("on the ", 0) == 0 || low.rfind("in the ", 0) == 0) &&
+    banned_lower.count(extractThePhraseLower(rel)) == 0)
+  {
+    return rel;
+  }
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
+
+  std::string best;
+  double best_d = 1e12;
+  for (const auto & f : taskInfo.furniture) {
+    const std::string cand = "the " + toReadableName(f.name);
+    const std::string cand_lower = toLowerAscii(cand);
+    if (banned_lower.count(cand_lower) > 0) {
+      continue;
+    }
+    const double d = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2) +
+      std::pow(pz - f.position.z, 2));
+    if (d < best_d) {
+      best_d = d;
+      best = cand;
+    }
+  }
+  return best.empty() ? "" : ("on " + best);
+}
+
+// near：0-3m 扫描可交互+不可交互；按最近项规则去重/排重后选第一个合格项
 std::string HumanNavigationSample::nearestNearLandmarkName(
   double x, double y, double z,
   double min_distance_m,
   double max_distance_m,
-  const std::string & avoid_name_lower) const
+  const std::unordered_set<std::string> & banned_lower) const
 {
-  double d1 = 1e12, d2 = 1e12;
-  std::string name1, name2;
+  struct Candidate
+  {
+    std::string phrase;
+    std::string lower;
+    double distance;
+    bool is_interactive;
+  };
+  std::vector<Candidate> candidates;
 
-  auto consider = [&](const std::string & raw_name, double ox, double oy, double oz) {
+  auto append_candidate = [&](const std::string & raw_name, double ox, double oy, double oz, bool is_interactive) {
     const double d = std::sqrt(
       std::pow(x - ox, 2) + std::pow(y - oy, 2) + std::pow(z - oz, 2));
     if (d < min_distance_m || d > max_distance_m) {
       return;
     }
-    const std::string readable = toReadableName(raw_name);
-    const std::string cand = "the " + readable;
+    const std::string cand = "the " + toReadableName(raw_name);
     const std::string cand_lower = toLowerAscii(cand);
-    if (!isLargeLandmarkName(cand_lower)) {
-      return;  // 仅大型不可交互：table, cabinet, shelf, refrigerator 等
-    }
-    // 只记录“不同物品名”的前两近，避免同名占据第1/第2导致误选
-    if (!name1.empty() && cand_lower == toLowerAscii(name1)) {
-      return;
-    }
-    if (d < d1) {
-      d2 = d1;
-      name2 = name1;
-      d1 = d;
-      name1 = cand;
-    } else if (d < d2) {
-      d2 = d;
-      name2 = cand;
-    }
+    candidates.push_back(Candidate{cand, cand_lower, d, is_interactive});
   };
 
   for (const auto & f : taskInfo.furniture) {
-    consider(f.name, f.position.x, f.position.y, f.position.z);
+    append_candidate(f.name, f.position.x, f.position.y, f.position.z, false);
   }
   for (const auto & o : taskInfo.non_target_objects) {
-    consider(o.name, o.position.x, o.position.y, o.position.z);
+    append_candidate(o.name, o.position.x, o.position.y, o.position.z, true);
   }
+  append_candidate(
+    taskInfo.target_object.name,
+    taskInfo.target_object.position.x,
+    taskInfo.target_object.position.y,
+    taskInfo.target_object.position.z,
+    true);
 
-  if (name1.empty()) {
+  if (candidates.empty()) {
     return "";
   }
-  if (avoid_name_lower.empty() || toLowerAscii(name1) != avoid_name_lower) {
-    return name1;  // 最近的一项不与 on 重合，用最近的
+
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
+    return a.distance < b.distance;
+  });
+
+  std::unordered_map<std::string, int> interactive_counts;
+  for (const auto & c : candidates) {
+    if (c.is_interactive) {
+      interactive_counts[c.lower] += 1;
+    }
   }
-  if (!name2.empty() && toLowerAscii(name2) != avoid_name_lower) {
-    return name2;  // 最近的一项与 on 重合，用第二近的（且第二近也不与 on 重合）
+
+  std::unordered_set<std::string> rejected = banned_lower;
+  for (const auto & c : candidates) {
+    if (rejected.count(c.lower) > 0) {
+      continue;
+    }
+    if (!c.is_interactive) {
+      return c.phrase;
+    }
+    if (interactive_counts[c.lower] > 1) {
+      rejected.insert(c.lower);
+      continue;
+    }
+    return c.phrase;
   }
-  return "";  // 第二近也为空或与 on 重合，不加 near
+  return "";
 }
 
 std::string HumanNavigationSample::buildStrictPickTemplate() const
@@ -1345,23 +1428,30 @@ std::string HumanNavigationSample::buildStrictPickTemplate() const
   const double tx = taskInfo.target_object.position.x;
   const double ty = taskInfo.target_object.position.y;
   const double tz = taskInfo.target_object.position.z;
-  // 抓取模板严格固定为: "Please grab <target> on <A>, near <B>..."
-  // 因此这里强制主介词为 on，仅取 furniture 名词位，避免出现 "near ..., near ..."
-  std::string on_target = nearestFurnitureName(tx, ty, tz);  // "the <furniture>"
-  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
-  std::string avoid;
-  if (!on_phrase.empty()) {
-    const size_t pos = on_phrase.find("the ");
-    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
+  std::unordered_set<std::string> on_banned = {toLowerAscii(target)};
+  const std::string place_slot = buildOnSlotPhrase(
+    taskInfo.destination.position.x, taskInfo.destination.position.y, taskInfo.destination.position.z,
+    std::abs(taskInfo.destination.size.x), std::abs(taskInfo.destination.size.y), std::abs(taskInfo.destination.size.z),
+    on_banned);
+  const std::string place_the = extractThePhraseLower(place_slot);
+  if (!place_the.empty()) {
+    on_banned.insert(place_the);
   }
-  std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, avoid);
+  // 抓取前 on：目标物下方大型不可交互物体，先 0-2m，失败再扩圈
+  const std::string on_slot = buildPickOnSlotPhrase(tx, ty, tz, on_banned);
+  std::unordered_set<std::string> near_banned = on_banned;
+  const std::string on_the = extractThePhraseLower(on_slot);
+  if (!on_the.empty()) {
+    near_banned.insert(on_the);
+  }
+  const std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, near_banned);
 
-  if (!on_phrase.empty() && !nearby.empty()) {
-    return "Please grab " + target + " " + on_phrase + ", near " + nearby +
+  if (!on_slot.empty() && !nearby.empty()) {
+    return "Please grab " + target + " " + on_slot + ", near " + nearby +
            ",where the robot points.";
   }
-  if (!on_phrase.empty()) {
-    return "Please grab " + target + " " + on_phrase + ",where the robot points.";
+  if (!on_slot.empty()) {
+    return "Please grab " + target + " " + on_slot + ",where the robot points.";
   }
   if (!nearby.empty()) {
     return "Please grab " + target + " near " + nearby + ",where the robot points.";
@@ -1374,22 +1464,23 @@ std::string HumanNavigationSample::buildStrictPlaceTemplate() const
   const double dx = taskInfo.destination.position.x;
   const double dy = taskInfo.destination.position.y;
   const double dz = taskInfo.destination.position.z;
-  // 放置模板严格固定为: "Please place it on <A>, near <B>..."
-  // 强制主介词为 on，仅取 furniture 名词位，避免出现 "place it near ..."
-  std::string on_target = nearestFurnitureName(dx, dy, dz);  // "the <furniture>"
-  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
-  std::string avoid;
-  if (!on_phrase.empty()) {
-    const size_t pos = on_phrase.find("the ");
-    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
+  const double sx = std::abs(taskInfo.destination.size.x);
+  const double sy = std::abs(taskInfo.destination.size.y);
+  const double sz = std::abs(taskInfo.destination.size.z);
+  std::unordered_set<std::string> on_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  const std::string on_slot = buildOnSlotPhrase(dx, dy, dz, sx, sy, sz, on_banned);
+  std::unordered_set<std::string> near_banned = on_banned;
+  const std::string on_the = extractThePhraseLower(on_slot);
+  if (!on_the.empty()) {
+    near_banned.insert(on_the);
   }
-  std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, avoid);
+  const std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, near_banned);
 
-  if (!on_phrase.empty() && !nearby.empty()) {
-    return "Please place it " + on_phrase + ", near " + nearby + ",where the robot points.";
+  if (!on_slot.empty() && !nearby.empty()) {
+    return "Please place it " + on_slot + ", near " + nearby + ",where the robot points.";
   }
-  if (!on_phrase.empty()) {
-    return "Please place it " + on_phrase + ",where the robot points.";
+  if (!on_slot.empty()) {
+    return "Please place it " + on_slot + ",where the robot points.";
   }
   if (!nearby.empty()) {
     return "Please place it near " + nearby + ",where the robot points.";
@@ -1440,12 +1531,43 @@ std::string HumanNavigationSample::buildContextJson() const
   const double dx = taskInfo.destination.position.x;
   const double dy = taskInfo.destination.position.y;
   const double dz = taskInfo.destination.position.z;
+  const double sx = std::abs(taskInfo.destination.size.x);
+  const double sy = std::abs(taskInfo.destination.size.y);
+  const double sz = std::abs(taskInfo.destination.size.z);
 
-  std::string pick_on = nearestFurnitureName(tx, ty, tz);   // "the <furniture>"
-  std::string place_on = nearestFurnitureName(dx, dy, dz);
-
-  std::string pick_near = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, toLowerAscii(pick_on));
-  std::string place_near = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, toLowerAscii(place_on));
+  std::unordered_set<std::string> pick_on_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  const std::string place_slot = buildOnSlotPhrase(dx, dy, dz, sx, sy, sz, pick_on_banned);
+  const std::string place_the = extractThePhraseLower(place_slot);
+  if (!place_the.empty()) {
+    pick_on_banned.insert(place_the);
+  }
+  const std::string pick_slot = buildPickOnSlotPhrase(tx, ty, tz, pick_on_banned);
+  auto extractThePhrase = [](const std::string & s) -> std::string {
+    if (s.empty()) {
+      return "";
+    }
+    const std::string low = HumanNavigationSample::toLowerAscii(s);
+    const size_t pos = low.find("the ");
+    if (pos != std::string::npos) {
+      return s.substr(pos);
+    }
+    return s;
+  };
+  std::string pick_on = extractThePhrase(pick_slot);
+  std::string place_on = extractThePhrase(place_slot);
+  std::unordered_set<std::string> pick_near_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  if (!pick_on.empty()) {
+    pick_near_banned.insert(toLowerAscii(pick_on));
+  }
+  if (!place_on.empty()) {
+    pick_near_banned.insert(toLowerAscii(place_on));
+  }
+  std::unordered_set<std::string> place_near_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  if (!place_on.empty()) {
+    place_near_banned.insert(toLowerAscii(place_on));
+  }
+  std::string pick_near = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, pick_near_banned);
+  std::string place_near = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, place_near_banned);
 
   std::ostringstream oss;
   oss << "{\"environment_id\":\"" << escapeJsonString(taskInfo.environment_id) << "\""
@@ -1504,27 +1626,113 @@ std::string HumanNavigationSample::polishGuidance(
   const std::string low = toLower(rewritten);
   const std::string phase_low = toLower(phase);
 
+  auto trimAscii = [](std::string s) {
+      size_t b = 0;
+      while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) {
+        ++b;
+      }
+      size_t e = s.size();
+      while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) {
+        --e;
+      }
+      return s.substr(b, e - b);
+    };
+  auto extractJsonString = [](const std::string & json, const std::string & key) {
+      const std::string needle = "\"" + key + "\":\"";
+      const size_t p = json.find(needle);
+      if (p == std::string::npos) {
+        return std::string();
+      }
+      size_t i = p + needle.size();
+      std::string out;
+      bool escaped = false;
+      while (i < json.size()) {
+        const char ch = json[i++];
+        if (escaped) {
+          out.push_back(ch);
+          escaped = false;
+          continue;
+        }
+        if (ch == '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch == '"') {
+          break;
+        }
+        out.push_back(ch);
+      }
+      return out;
+    };
+  auto normalizeSlot = [&](std::string s) {
+      s = trimAscii(toLower(s));
+      if (s.rfind("the ", 0) == 0) {
+        s = trimAscii(s.substr(4));
+      }
+      return s;
+    };
+
+  std::string slot_on;
+  std::string slot_near;
+  if (phase_low == "pick") {
+    slot_on = normalizeSlot(extractJsonString(context_json, "pick_on"));
+    slot_near = normalizeSlot(extractJsonString(context_json, "pick_near"));
+  } else if (phase_low == "place") {
+    slot_on = normalizeSlot(extractJsonString(context_json, "place_on"));
+    slot_near = normalizeSlot(extractJsonString(context_json, "place_near"));
+  }
+
   bool valid = true;
-  // 禁止两物品拼接：如 cafe set + mota table -> "cafe set mota table"
-  const bool fused_items = (low.find("set mota") != std::string::npos) ||
-                          (low.find("coffee set mota") != std::string::npos) ||
-                          (low.find("cafe set mota") != std::string::npos) ||
-                          (low.find("desk lamp") != std::string::npos);
-  if (fused_items) {
+  // 仅拦截“两个不同槽位(on/near)被拼接成一个名词短语”的情况
+  // 若场景中本来就存在单物体名（如 "desk lamp"），不应被硬编码拦截。
+  bool fused_by_slots = false;
+  if (!slot_on.empty() && !slot_near.empty() && slot_on != slot_near) {
+    const std::string merge1 = slot_on + " " + slot_near;
+    const std::string merge2 = slot_near + " " + slot_on;
+    fused_by_slots = (low.find(merge1) != std::string::npos) ||
+                     (low.find(merge2) != std::string::npos);
+  }
+  if (fused_by_slots) {
     valid = false;
   } else if (phase_low == "pick") {
     const bool has_prefix = low.find("please grab the") != std::string::npos;
     const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
+    const bool on_slot_ok =
+      slot_on.empty() ||
+      (low.find(" on the " + slot_on) != std::string::npos) ||
+      (low.find(" on " + slot_on) != std::string::npos);
+    const bool has_near = low.find(" near ") != std::string::npos;
+    const bool near_slot_ok =
+      (slot_near.empty() && !has_near) ||
+      (!slot_near.empty() && (
+        (low.find(", near the " + slot_near) != std::string::npos) ||
+        (low.find(", near " + slot_near) != std::string::npos)));
     const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
                                 (low.find(", near ") != std::string::npos);
-    valid = has_prefix && has_on && near_clause_ok;
+    if (valid && !slot_near.empty() && low.find(", near ") == std::string::npos) {
+      valid = false;
+    }
+    valid = valid && has_prefix && has_on && on_slot_ok && near_slot_ok && near_clause_ok;
   } else if (phase_low == "place") {
     const bool has_prefix = low.find("please place it") != std::string::npos;
     const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
+    const bool on_slot_ok =
+      slot_on.empty() ||
+      (low.find(" on the " + slot_on) != std::string::npos) ||
+      (low.find(" on " + slot_on) != std::string::npos);
+    const bool has_near = low.find(" near ") != std::string::npos;
+    const bool near_slot_ok =
+      (slot_near.empty() && !has_near) ||
+      (!slot_near.empty() && (
+        (low.find(", near the " + slot_near) != std::string::npos) ||
+        (low.find(", near " + slot_near) != std::string::npos)));
     const bool has_pointing = low.find("where the robot points") != std::string::npos;
     const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
                                 (low.find(", near ") != std::string::npos);
-    valid = has_prefix && has_on && has_pointing && near_clause_ok;
+    if (valid && !slot_near.empty() && low.find(", near ") == std::string::npos) {
+      valid = false;
+    }
+    valid = valid && has_prefix && has_on && on_slot_ok && near_slot_ok && has_pointing && near_clause_ok;
   }
 
   if (!valid) {

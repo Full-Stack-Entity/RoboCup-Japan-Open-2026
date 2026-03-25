@@ -25,6 +25,11 @@ def _launch_setup(context, *args, **kwargs):
     llm_client_timeout = float(LaunchConfiguration("llm_client_timeout_sec").perform(context))
     llm_service = LaunchConfiguration("llm_service_name").perform(context)
     direction_hint_interval = float(LaunchConfiguration("direction_hint_interval_sec").perform(context))
+    strict_template = LaunchConfiguration("strict_template_mode").perform(context).lower() in (
+        "true",
+        "1",
+        "yes",
+    )
 
     rosbridge_websocket = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(
@@ -83,6 +88,7 @@ def _launch_setup(context, *args, **kwargs):
                     "llm_timeout_sec": llm_client_timeout,
                     "llm_service_name": llm_service,
                     "direction_hint_interval_sec": direction_hint_interval,
+                    "strict_template_mode": strict_template,
                 }
             ],
         )
@@ -131,8 +137,13 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "direction_hint_interval_sec",
-                default_value="4.0",
+                default_value="7.0",
                 description="Interval (seconds) between directional hints (Forward/Left/Right/Backward).",
+            ),
+            DeclareLaunchArgument(
+                "strict_template_mode",
+                default_value="true",
+                description="If true, skeleton guidance uses strict C++ template only (no LLM rewrite).",
             ),
             OpaqueFunction(function=_launch_setup),
         ]

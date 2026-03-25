@@ -46,7 +46,10 @@ Stage templates (strict):
 Grammar constraints:
 - Main position MUST use "on": grab X on A, place it on A. Never use "near" for the main position.
 - Secondary landmark uses ", near B" (comma before near). Never merge two items into one phrase.
+- If the draft contains ", near ", you MUST keep the comma exactly where it is; never write "on the X near the Y" without a comma before "near".
+- Use the on-slot and near-slot as two separate noun phrases from context_json; do not concatenate them.
 - BAD: "near the cafe set mota table" (cafe set and mota table are two different items).
+- BAD: "on the desk lamp, near the cabinet" when on=desk and near=lamp.
 - GOOD: "on the mota table, near the cafe set" — one item per slot."""
 
 
