@@ -28,22 +28,26 @@ Rules:
 - Output ONLY English. One or two short sentences.
 - Use simple, concrete words. Prefer landmark + position (e.g. on/near/in the [furniture]) as in the draft.
 - Do NOT add objects, colors, or places that are not clearly implied by the draft or the JSON context.
+- Prefer large, stable, non-interactive landmarks (table/cabinet/shelf/refrigerator) for "on/in/near".
 - Do NOT use rare or literary vocabulary.
 - Maximum length: about {max_output_chars} characters (stay well under this if possible).
 - No quotes, no numbering, no preamble — only the instruction text.
 
 Stage templates (strict):
-- If phase is "pick", use:
-  "Please grab the <target> on/near <main location>, near <landmark>."
+- If phase is "pick", use exactly:
+  "Please grab the <target> on <main location>, near <landmark>."
+  Use "on" (never "near") for the main location. Prefer context_json.pick_on and context_json.pick_near.
   If no landmark is known, omit ", near <landmark>".
-- If phase is "place", use:
-  "Please place it on/in/near <destination>, near <landmark>, where the robot points."
+- If phase is "place", use exactly:
+  "Please place it on <destination>, near <landmark>, where the robot points."
+  Use "on" (never "near") for the main destination. Prefer context_json.place_on and context_json.place_near.
   Keep destination and landmark as separate noun phrases.
 
 Grammar constraints:
-- Keep relation words explicit and separated: "on <A>, near <B>".
-- Never output fused phrases like "near the coffee set mota table".
-- Destination first, nearby landmark second."""
+- Main position MUST use "on": grab X on A, place it on A. Never use "near" for the main position.
+- Secondary landmark uses ", near B" (comma before near). Never merge two items into one phrase.
+- BAD: "near the cafe set mota table" (cafe set and mota table are two different items).
+- GOOD: "on the mota table, near the cafe set" — one item per slot."""
 
 
 def _ollama_chat(
