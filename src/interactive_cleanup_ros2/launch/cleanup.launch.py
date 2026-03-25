@@ -2,10 +2,11 @@
 """
 Full-stack launch for Interactive Cleanup:
   - interactive_cleanup_sample  (C++ controller)
-  - cleanup_detection_node      (Python vision: YOLO + PoseLandmarker)
+  - head_perception_node        (Head RGB-D perception)
+  - hand_perception_node        (Hand-camera perception)
   - sigverse_ros_bridge         (SIGVerse ↔ ROS 2)
   - rosbridge_websocket         (WebSocket bridge)
-  - Nav2 stack (optional, default on)
+  - Nav2 localization + navigation (optional, default on)
   - RViz2 (optional, default off)
 """
 import math
@@ -53,6 +54,17 @@ def generate_launch_description():
         pkg_interactive_cleanup, 'config', 'nav2_params.yaml'])
     rviz_config = PathJoinSubstitution([
         pkg_interactive_cleanup, 'config', 'cleanup.rviz'])
+    nav2_common_parameters = [
+        nav2_params,
+        {'use_sim_time': LaunchConfiguration('use_sim_time')},
+    ]
+    nav2_common_remappings = [
+        ('/tf', 'tf'),
+        ('/tf_static', 'tf_static'),
+    ]
+    cmd_vel_remappings = nav2_common_remappings + [
+        ('cmd_vel', '/hsrb/command_velocity'),
+    ]
 
     # ---- Core nodes ----
     cleanup_node = Node(
@@ -62,13 +74,22 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'destination_regions_file': PathJoinSubstitution([
+                pkg_interactive_cleanup, 'config', 'destination_regions.yaml']),
         }],
     )
 
-    vision_node = Node(
+    head_perception_node = Node(
         package='cleanup_vision_ros2',
-        executable='cleanup_detection_node',
-        name='cleanup_detection_node',
+        executable='head_perception_node',
+        name='head_perception_node',
+        output='screen',
+    )
+
+    hand_perception_node = Node(
+        package='cleanup_vision_ros2',
+        executable='hand_perception_node',
+        name='hand_perception_node',
         output='screen',
     )
 
@@ -128,13 +149,15 @@ def generate_launch_description():
     )
 
     # ---- Nav2 (conditional) ----
+    # Use the stock localization launch, but launch navigation nodes explicitly
+    # so velocity commands reach the HSR base topic directly.
     nav2_launch = GroupAction(
         condition=IfCondition(LaunchConfiguration('use_nav2')),
         actions=[
             IncludeLaunchDescription(
                 AnyLaunchDescriptionSource(
                     PathJoinSubstitution([
-                        pkg_nav2_bringup, 'launch', 'bringup_launch.py',
+                        pkg_nav2_bringup, 'launch', 'localization_launch.py',
                     ])
                 ),
                 launch_arguments={
@@ -142,7 +165,58 @@ def generate_launch_description():
                     'params_file': nav2_params,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'autostart': 'true',
+                    'use_composition': 'False',
+                    'use_respawn': 'False',
+                    'log_level': 'info',
                 }.items(),
+            ),
+            Node(
+                package='nav2_controller',
+                executable='controller_server',
+                name='controller_server',
+                output='screen',
+                parameters=nav2_common_parameters,
+                remappings=cmd_vel_remappings,
+            ),
+            Node(
+                package='nav2_planner',
+                executable='planner_server',
+                name='planner_server',
+                output='screen',
+                parameters=nav2_common_parameters,
+                remappings=nav2_common_remappings,
+            ),
+            Node(
+                package='nav2_behaviors',
+                executable='behavior_server',
+                name='behavior_server',
+                output='screen',
+                parameters=nav2_common_parameters,
+                remappings=cmd_vel_remappings,
+            ),
+            Node(
+                package='nav2_bt_navigator',
+                executable='bt_navigator',
+                name='bt_navigator',
+                output='screen',
+                parameters=nav2_common_parameters,
+                remappings=nav2_common_remappings,
+            ),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_navigation',
+                output='screen',
+                parameters=[
+                    {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                    {'autostart': True},
+                    {'node_names': [
+                        'controller_server',
+                        'planner_server',
+                        'behavior_server',
+                        'bt_navigator',
+                    ]},
+                ],
             ),
         ],
     )
@@ -165,7 +239,8 @@ def generate_launch_description():
             static_tf_map_odom,
             placeholder_tf,
             cleanup_node,
-            vision_node,
+            head_perception_node,
+            hand_perception_node,
             sigverse_bridge,
             rosbridge,
             nav2_launch,

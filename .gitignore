@@ -5,12 +5,14 @@ Dockerfile
 docs/*
 picture/*
 reference/*
+Interactive cleanup重构方案.md
 unsolved.md
 
 # 本地日志，编译，安装文件
 log/*
 build/*
 install/*
+.worktrees/
 
 # pixi 环境
 .pixi/*
