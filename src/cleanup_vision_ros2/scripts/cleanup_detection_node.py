@@ -37,112 +37,51 @@ from cv_bridge import CvBridge
 import tf2_ros
 from tf_transformations import euler_from_quaternion, quaternion_matrix
 
-from ament_index_python.packages import get_package_share_directory
-from ultralytics import YOLO
-
 try:
     import mediapipe as mp
+    HAS_MEDIAPIPE = True
+except ImportError:
+    mp = None
+    HAS_MEDIAPIPE = False
+
+try:
     from mediapipe.tasks.python import vision as mp_vision
     from mediapipe.tasks.python.core.base_options import BaseOptions
     from mediapipe.tasks.python.vision.core.vision_task_running_mode import (
         VisionTaskRunningMode,
     )
-    HAS_MEDIAPIPE_TASKS = True
+    HAS_MEDIAPIPE_TASKS = HAS_MEDIAPIPE
 except (ImportError, AttributeError):
-    mp = None
     mp_vision = None
     BaseOptions = None
     VisionTaskRunningMode = None
     HAS_MEDIAPIPE_TASKS = False
+
+HAS_MEDIAPIPE_SOLUTIONS = bool(
+    HAS_MEDIAPIPE and
+    getattr(getattr(mp, 'solutions', None), 'pose', None) is not None
+)
 
 from cleanup_vision_ros2.msg import (
     DetectedObject,
     DetectedObjectArray,
     PointingDirection,
 )
+from perception_common import (
+    CAMERA_INFO_TOPIC,
+    DEPTH_CAM_TOPIC,
+    HEAD_CAM_TOPIC,
+    describe_pose_backend_unavailable as _describe_pose_backend_unavailable,
+    find_pose_model_path as _find_pose_model_path,
+    find_yolo_model_path as _find_yolo_model_path,
+    landmark_visibility as _landmark_visibility,
+    load_yolo_class as _load_yolo_class,
+    select_pose_backend as _select_pose_backend,
+)
 
 # MediaPipe landmark indices
 _L_SHOULDER, _L_ELBOW, _L_WRIST, _L_INDEX = 11, 13, 15, 19
 _R_SHOULDER, _R_ELBOW, _R_WRIST, _R_INDEX = 12, 14, 16, 20
-
-HEAD_CAM_TOPIC = '/hsrb/head_rgbd_sensor/rgb/image_raw'
-DEPTH_CAM_TOPIC = '/hsrb/head_rgbd_sensor/depth_registered/image_raw'
-CAMERA_INFO_TOPIC = '/hsrb/head_rgbd_sensor/rgb/camera_info'
-
-
-def _source_models_dir(package_name: str) -> str:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    src_root = os.path.normpath(os.path.join(script_dir, '..', '..'))
-    return os.path.join(src_root, package_name, 'models')
-
-
-def _share_models_dir(package_name: str):
-    try:
-        return os.path.join(get_package_share_directory(package_name), 'models')
-    except Exception:
-        return None
-
-
-def _unique_dirs(*dirs):
-    seen = set()
-    ordered = []
-    for directory in dirs:
-        if not directory:
-            continue
-        norm = os.path.normpath(directory)
-        if norm in seen:
-            continue
-        seen.add(norm)
-        ordered.append(norm)
-    return ordered
-
-
-def _find_yolo_model_path() -> str:
-    """Locate YOLO weights in cleanup_vision_ros2 first, then vision_ros2."""
-    model_dirs = _unique_dirs(
-        _share_models_dir('cleanup_vision_ros2'),
-        _source_models_dir('cleanup_vision_ros2'),
-        _share_models_dir('vision_ros2'),
-        _source_models_dir('vision_ros2'),
-    )
-
-    for name in ('cleanup_model.pt', 'last.pt', 'yolo12n.pt'):
-        for model_dir in model_dirs:
-            path = os.path.join(model_dir, name)
-            if os.path.isfile(path):
-                return path
-
-    preferred_dir = model_dirs[0] if model_dirs else _source_models_dir(
-        'cleanup_vision_ros2')
-    os.makedirs(preferred_dir, exist_ok=True)
-    return os.path.join(preferred_dir, 'yolo12n.pt')
-
-
-def _find_pose_model_path():
-    """Locate a local Pose Landmarker task bundle. No auto-download fallback."""
-    model_dirs = _unique_dirs(
-        _share_models_dir('cleanup_vision_ros2'),
-        _source_models_dir('cleanup_vision_ros2'),
-    )
-    model_names = (
-        'pose_landmarker.task',
-        'pose_landmarker_full.task',
-        'pose_landmarker_lite.task',
-        'pose_landmarker_heavy.task',
-    )
-
-    for name in model_names:
-        for model_dir in model_dirs:
-            path = os.path.join(model_dir, name)
-            if os.path.isfile(path):
-                return path
-    return None
-
-
-def _landmark_visibility(landmark) -> float:
-    visibility = getattr(landmark, 'visibility', None)
-    return float(visibility) if visibility is not None else 0.0
-
 
 class CleanupDetectionNode(Node):
     def __init__(self):
@@ -190,21 +129,32 @@ class CleanupDetectionNode(Node):
         # YOLO
         self.model = None
         self.coco_names = {}
-        try:
-            model_path = _find_yolo_model_path()
-            self.model = YOLO(model_path)
-            self.coco_names = self.model.names
-            self.get_logger().info(f'YOLO model loaded: {model_path}')
-        except Exception as exc:
-            self.get_logger().error(
-                f'Failed to initialize YOLO model: {exc}. '
-                'Object detection will remain disabled.')
+        yolo_class, yolo_error = _load_yolo_class()
+        if yolo_class is None:
+            self.get_logger().warn(
+                f'{yolo_error}. Object detection will remain disabled.')
+        else:
+            try:
+                model_path = _find_yolo_model_path()
+                self.model = yolo_class(model_path)
+                self.coco_names = self.model.names
+                self.get_logger().info(f'YOLO model loaded: {model_path}')
+            except Exception as exc:
+                self.get_logger().error(
+                    f'Failed to initialize YOLO model: {exc}. '
+                    'Object detection will remain disabled.')
 
         # MediaPipe PoseLandmarker
         self.pose_detector = None
         self.pose_timestamp_ms = 0
+        self.pose_backend = 'disabled'
         pose_model_path = _find_pose_model_path()
-        if HAS_MEDIAPIPE_TASKS and pose_model_path:
+        self.pose_backend = _select_pose_backend(
+            HAS_MEDIAPIPE_TASKS,
+            pose_model_path,
+            HAS_MEDIAPIPE_SOLUTIONS,
+        )
+        if self.pose_backend == 'tasks':
             try:
                 options = mp_vision.PoseLandmarkerOptions(
                     base_options=BaseOptions(model_asset_path=pose_model_path),
@@ -220,16 +170,22 @@ class CleanupDetectionNode(Node):
                 self.get_logger().info(
                     f'MediaPipe PoseLandmarker initialized: {pose_model_path}')
             except Exception as exc:
-                self.get_logger().warn(
-                    f'PoseLandmarker initialization failed: {exc}. '
-                    'Pointing estimation disabled.')
-        elif not HAS_MEDIAPIPE_TASKS:
+                self._init_pose_solution_fallback(
+                    f'PoseLandmarker initialization failed: {exc}')
+        elif self.pose_backend == 'solutions':
+            if pose_model_path is None:
+                self._init_pose_solution_fallback(
+                    'PoseLandmarker model asset not found in '
+                    'cleanup_vision_ros2/models/')
+            else:
+                self._init_pose_solution_fallback('MediaPipe Tasks unavailable')
+        elif not HAS_MEDIAPIPE and not HAS_MEDIAPIPE_TASKS:
             self.get_logger().warn(
-                'MediaPipe Tasks unavailable — pointing estimation disabled')
+                'MediaPipe unavailable — pointing estimation disabled')
         else:
             self.get_logger().warn(
-                'PoseLandmarker model asset not found in '
-                'cleanup_vision_ros2/models/ — pointing estimation disabled')
+                f'{_describe_pose_backend_unavailable(HAS_MEDIAPIPE, HAS_MEDIAPIPE_TASKS, pose_model_path, HAS_MEDIAPIPE_SOLUTIONS)} '
+                '— pointing estimation disabled')
 
         self._has_display = bool(os.environ.get('DISPLAY', ''))
         self.last_detect_time = self.get_clock().now()
@@ -240,11 +196,38 @@ class CleanupDetectionNode(Node):
     def destroy_node(self):
         if self.pose_detector is not None:
             try:
-                self.pose_detector.close()
+                close_fn = getattr(self.pose_detector, 'close', None)
+                if close_fn is not None:
+                    close_fn()
             except Exception:
                 pass
             self.pose_detector = None
         return super().destroy_node()
+
+    def _init_pose_solution_fallback(self, reason: str):
+        if not HAS_MEDIAPIPE_SOLUTIONS:
+            self.pose_backend = 'disabled'
+            self.get_logger().warn(f'{reason}. Pointing estimation disabled.')
+            return
+
+        try:
+            self.pose_detector = mp.solutions.pose.Pose(
+                static_image_mode=False,
+                model_complexity=1,
+                smooth_landmarks=True,
+                enable_segmentation=False,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            self.pose_backend = 'solutions'
+            self.get_logger().warn(
+                f'{reason}. Falling back to MediaPipe Pose solution.')
+        except Exception as exc:
+            self.pose_backend = 'disabled'
+            self.pose_detector = None
+            self.get_logger().warn(
+                f'{reason}. MediaPipe Pose fallback failed: {exc}. '
+                'Pointing estimation disabled.')
 
     # ------------------------------------------------------------------
     # Sensor callbacks
@@ -349,24 +332,38 @@ class CleanupDetectionNode(Node):
             return None
 
         rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        now_ms = int(self.get_clock().now().nanoseconds / 1_000_000)
-        self.pose_timestamp_ms = max(self.pose_timestamp_ms + 1, now_ms)
+        if self.pose_backend == 'tasks':
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            now_ms = int(self.get_clock().now().nanoseconds / 1_000_000)
+            self.pose_timestamp_ms = max(self.pose_timestamp_ms + 1, now_ms)
 
-        try:
-            results = self.pose_detector.detect_for_video(
-                mp_image, self.pose_timestamp_ms)
-        except Exception as exc:
-            self.get_logger().warn(f'PoseLandmarker inference failed: {exc}')
-            return None
+            try:
+                results = self.pose_detector.detect_for_video(
+                    mp_image, self.pose_timestamp_ms)
+            except Exception as exc:
+                self.get_logger().warn(f'PoseLandmarker inference failed: {exc}')
+                return None
 
-        if not results.pose_landmarks:
+            landmark_sets = results.pose_landmarks
+        else:
+            try:
+                results = self.pose_detector.process(rgb)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'MediaPipe Pose fallback inference failed: {exc}')
+                return None
+
+            landmark_sets = []
+            if results.pose_landmarks is not None:
+                landmark_sets.append(results.pose_landmarks.landmark)
+
+        if not landmark_sets:
             return None
 
         h, w = bgr.shape[:2]
         best = None
         best_score = -1.0
-        for lm in results.pose_landmarks:
+        for lm in landmark_sets:
             def _arm_ext(s, e, wr):
                 vis = min(
                     _landmark_visibility(lm[s]),

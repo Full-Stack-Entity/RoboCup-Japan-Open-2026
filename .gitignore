@@ -5,12 +5,14 @@ Dockerfile
 docs/*
 picture/*
 reference/*
-unsolved.md
+*.md
+!readme.md
 
 # 本地日志，编译，安装文件
 log/*
 build/*
 install/*
+.worktrees/
 
 # pixi 环境
 .pixi/*
