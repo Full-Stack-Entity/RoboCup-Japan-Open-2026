@@ -13,7 +13,6 @@
 #include <human_navigation_msgs/msg/human_navi_avatar_status.hpp>
 #include <human_navigation_msgs/msg/human_navi_object_status.hpp>
 
-#include "human_nav_llm_ros2/srv/rewrite_guidance.hpp"
 
 // 原 ROS1: tf/transform_listener.h -> ROS2: tf2_ros + tf2_geometry_msgs
 #include <tf2_ros/transform_listener.h>
@@ -30,6 +29,8 @@
 #include <chrono>
 #include <cctype>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
 
 class HumanNavigationSample
 {
@@ -133,13 +134,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_base_twist_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_base_trajectory_;
 
-  // Subtask C: optional local LLM rewrite (see docs/SUBTASK2_LLM_方案分析.md)
-  bool use_llm_rewrite_{false};
-  double llm_timeout_sec_{2.0};
-  std::string llm_service_name_{"/rewrite_guidance"};
-  bool strict_template_mode_{true};
-  rclcpp::Client<human_nav_llm_ros2::srv::RewriteGuidance>::SharedPtr llm_client_;
-  /// 抓取阶段骨架句（已 polish 或与原文一致）；周期性距离行在此基础上拼接，不再调用 LLM
+  /// 抓取阶段骨架句；周期性距离行在此基础上拼接
   std::string polished_pick_base_;
   /// 放置阶段骨架句
   std::string polished_place_base_;
@@ -148,10 +143,11 @@ private:
 
   /// 方位提示节流：上次发送时间(秒)、间隔秒数（规则要求≤15条，不再实时距离）
   double last_direction_hint_sec_{0.0};
-  double direction_hint_interval_sec_{7.0};
+  double direction_hint_interval_sec_{10.0};
   /// 抓取正确提示后，字幕保持到该时间点（秒）；期间禁止新字幕覆盖
   double subtitle_hold_until_sec_{0.0};
   std::string last_wrong_object_name_;
+  bool wrong_object_hold_active_{false};
 
   std::string getDirectionHint(
     double av_x, double av_y,
@@ -161,20 +157,26 @@ private:
   static std::string toLowerAscii(std::string s);
   static bool isLargeLandmarkName(const std::string & readable_name_lower);
   static bool isRefrigeratorName(const std::string & readable_name_lower);
+  static std::string extractThePhraseLower(const std::string & phrase);
+  bool isFusedSlotName(const std::string & readable_name) const;
+  bool hasReadableObjectName(const std::string & readable_name_lower) const;
+  bool shouldForceSplitCafeMota() const;
+  std::string normalizeKnownFusionPhrase(std::string text) const;
   /// 基于 getFurnitureRelation 的空间判断，返回 "on/in/near the X"（仅来自 furniture，不掺入 non_target）
   std::string getRelationPhraseForPosition(double dx, double dy, double dz,
                                           double size_x, double size_y, double size_z) const;
   std::string nearestFurnitureName(double x, double y, double z) const;
-  std::string nearestLargeLandmarkName(
-    double x, double y, double z,
-    double min_distance_m,
-    double max_distance_m,
-    const std::string & avoid_name_lower = "") const;
+  /// 抓取阶段 on 槽位：目标物体下方大型不可交互（先 0-2m，失败再扩大范围）
+  std::string buildPickOnSlotPhrase(double px, double py, double pz, const std::unordered_set<std::string> & banned_lower) const;
+  /// 目标点下的家具介词短语：优先 on/in（getRelationPhraseForPosition），否则 on the + 最近家具
+  std::string buildOnSlotPhrase(
+    double px, double py, double pz, double sx, double sy, double sz,
+    const std::unordered_set<std::string> & banned_lower) const;
   std::string nearestNearLandmarkName(
     double x, double y, double z,
     double min_distance_m,
     double max_distance_m,
-    const std::string & avoid_name_lower = "") const;
+    const std::unordered_set<std::string> & banned_lower) const;
   std::string buildStrictPickTemplate() const;
   std::string buildStrictPlaceTemplate() const;
 
@@ -214,6 +216,7 @@ private:
     last_direction_hint_sec_ = 0.0;
     subtitle_hold_until_sec_ = 0.0;
     last_wrong_object_name_.clear();
+    wrong_object_hold_active_ = false;
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -237,7 +240,8 @@ private:
     const std::string & message,
     const std::string & displayType)
   {
-    const std::string safe_message = truncateUtf8(message, 400);
+    const std::string normalized_message = normalizeKnownFusionPhrase(message);
+    const std::string safe_message = truncateUtf8(normalized_message, 400);
 
     human_navigation_msgs::msg::HumanNaviGuidanceMsg guidanceMessage;
     guidanceMessage.message         = safe_message;
@@ -254,7 +258,7 @@ private:
       "Send guide message: %s : %s",
       guidanceMessage.message.c_str(),
       guidanceMessage.display_type.c_str());
-    if (message != safe_message) {
+    if (normalized_message != safe_message) {
       RCLCPP_WARN(
         nodeHandle->get_logger(),
         "Guidance truncated to <=400 Unicode scalars for competition limit");
@@ -404,18 +408,8 @@ private:
     {
       return "a cup";
     }
-    // 默认：去掉末尾 _0/_1 等，下划线改空格，前加 "the "
-    std::string s = name;
-    while (s.size() > 0 && std::isdigit(static_cast<unsigned char>(s.back())))
-    {
-      s.pop_back();
-    }
-    if (s.size() > 0 && s.back() == '_')
-    {
-      s.pop_back();
-    }
-    std::replace(s.begin(), s.end(), '_', ' ');
-    return "the " + s;
+    // 默认：统一走 toReadableName，清理 Unity 后缀噪声（如 _C01 / _C_02 / _A）
+    return "the " + toReadableName(name);
   }
 
   // 下方 getFinalDestination/getInitialDestination/getFurnitureRelation 基本照搬 2025 逻辑
@@ -548,8 +542,7 @@ private:
       if (within)
       {
         RCLCPP_INFO(nodeHandle->get_logger(), "Within the furniture");
-        std::string furniture_name = taskInfo.furniture[index_of_nearest_furniture].name;
-        std::replace(furniture_name.begin(), furniture_name.end(), '_', ' ');
+        std::string furniture_name = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
         std::string relation = getFurnitureRelation(
           furniture_name,
@@ -563,8 +556,7 @@ private:
     }
 
     RCLCPP_INFO(nodeHandle->get_logger(), "Not within the furniture");
-    std::string nearest_furniture_name = taskInfo.furniture[index_of_nearest_furniture].name;
-    std::replace(nearest_furniture_name.begin(), nearest_furniture_name.end(), '_', ' ');
+    std::string nearest_furniture_name = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
     return "Place it in/on the " + nearest_furniture_name;
   }
@@ -605,8 +597,7 @@ private:
       }
     }
 
-    std::string nearest_furniture = taskInfo.furniture[index_of_nearest_furniture].name;
-    std::replace(nearest_furniture.begin(), nearest_furniture.end(), '_', ' ');
+    std::string nearest_furniture = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
     int   index_of_nearest_non = 0;
     float min_distance_non     = 999999999.0f;
@@ -632,11 +623,7 @@ private:
 
     std::string readableTarget = getHumanReadableTargetName(targetObjectName);
     std::string nearest_non_target =
-      (k > 0) ? taskInfo.non_target_objects[index_of_nearest_non].name : "";
-    if (!nearest_non_target.empty())
-    {
-      std::replace(nearest_non_target.begin(), nearest_non_target.end(), '_', ' ');
-    }
+      (k > 0) ? toReadableName(taskInfo.non_target_objects[index_of_nearest_non].name) : "";
 
     if (k > 0 && min_distance_non < 0.4)
     {
@@ -717,11 +704,16 @@ private:
       if (now_sec < subtitle_hold_until_sec_) {
         return;
       }
-      // 保持窗口结束：重置计时起点，确保下一条周期字幕按完整间隔触发
+      // 保持窗口结束：立即允许下一条周期提示触发
       subtitle_hold_until_sec_ = 0.0;
-      last_direction_hint_sec_ = now_sec;
+      last_direction_hint_sec_ = now_sec - direction_hint_interval_sec_;
     }
     const bool interval_elapsed = (now_sec - last_direction_hint_sec_) >= direction_hint_interval_sec_;
+
+    // 抓错物体且未放下时：锁定错误提示，不允许周期提示覆盖
+    if (step == GuideForTakingObject && wrong_object_hold_active_) {
+      return;
+    }
 
     if (step == GuideForTakingObject && interval_elapsed)
     {
@@ -730,12 +722,10 @@ private:
                                                           : polished_pick_base_;
       const double av_x = avatarStatus.body.position.x;
       const double av_y = avatarStatus.body.position.y;
-      const double av_z = avatarStatus.body.position.z;
       const double obj_x = taskInfo.target_object.position.x;
       const double obj_y = taskInfo.target_object.position.y;
-      const double obj_z = taskInfo.target_object.position.z;
       const double dist_obj = std::sqrt(
-        std::pow(av_x - obj_x, 2) + std::pow(av_y - obj_y, 2) + std::pow(av_z - obj_z, 2));
+        std::pow(av_x - obj_x, 2) + std::pow(av_y - obj_y, 2));
       std::string hint = getDirectionHint(av_x, av_y, obj_x, obj_y, avatarStatus.body.orientation);
       std::ostringstream dist_ss;
       dist_ss << std::fixed << std::setprecision(2) << dist_obj;
@@ -751,12 +741,10 @@ private:
         : polished_place_base_;
       const double av_x = avatarStatus.body.position.x;
       const double av_y = avatarStatus.body.position.y;
-      const double av_z = avatarStatus.body.position.z;
       const double dest_x = taskInfo.destination.position.x;
       const double dest_y = taskInfo.destination.position.y;
-      const double dest_z = taskInfo.destination.position.z;
       const double dist_dest = std::sqrt(
-        std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2) + std::pow(av_z - dest_z, 2));
+        std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2));
       std::string hint = getDirectionHint(av_x, av_y, dest_x, dest_y, avatarStatus.body.orientation);
       std::ostringstream dist_ss;
       dist_ss << std::fixed << std::setprecision(2) << dist_dest;
@@ -800,6 +788,8 @@ private:
     if (speechState == SpeechState::Speakable)
     {
       sendGuidanceMessage(pubGuidanceMsgLocal, message, DISPLAY_TYPE_ALL);
+      // 非周期提示（通过 speakGuidanceMessage 发送）触发后重置周期计时器
+      last_direction_hint_sec_ = 0.0;
       speechState = SpeechState::None;
       return true;
     }
@@ -866,28 +856,9 @@ public:
       "/hsrb/omni_base_controller/command",
       10);
 
-    nodeHandle->declare_parameter("use_llm_rewrite", false);
-    nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
-    nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
-    nodeHandle->declare_parameter("strict_template_mode", true);
-    nodeHandle->declare_parameter("direction_hint_interval_sec", 7.0);
-    use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
-    llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
-    llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
-    strict_template_mode_ = nodeHandle->get_parameter("strict_template_mode").as_bool();
+    nodeHandle->declare_parameter("direction_hint_interval_sec", 10.0);
     direction_hint_interval_sec_ = nodeHandle->get_parameter("direction_hint_interval_sec").as_double();
-    if (use_llm_rewrite_) {
-      llm_client_ = nodeHandle->create_client<human_nav_llm_ros2::srv::RewriteGuidance>(
-        llm_service_name_);
-      RCLCPP_INFO(
-        nodeHandle->get_logger(),
-        "use_llm_rewrite=true, strict_template_mode=%s, service=%s timeout=%.2fs",
-        strict_template_mode_ ? "true" : "false",
-        llm_service_name_.c_str(),
-        llm_timeout_sec_);
-    } else {
-      RCLCPP_INFO(nodeHandle->get_logger(), "use_llm_rewrite=false (guidance text unchanged except truncation)");
-    }
+    RCLCPP_INFO(nodeHandle->get_logger(), "LLM path removed; deterministic guidance only.");
 
     timePrevSpeechStateConfirmed = nodeHandle->now();
 
@@ -898,16 +869,10 @@ public:
       rclcpp::spin_some(nodeHandle);
 
       if (pending_polish_) {
-        const std::string ctx = buildContextJson();
         const std::string draft_pick  = buildStrictPickTemplate();
         const std::string draft_place = buildStrictPlaceTemplate();
-        if (use_llm_rewrite_ && !strict_template_mode_) {
-          polished_pick_base_  = polishGuidance(draft_pick, "pick", ctx);
-          polished_place_base_ = polishGuidance(draft_place, "place", ctx);
-        } else {
-          polished_pick_base_  = truncateUtf8(draft_pick, 400);
-          polished_place_base_ = truncateUtf8(draft_place, 400);
-        }
+        polished_pick_base_  = truncateUtf8(draft_pick, 400);
+        polished_place_base_ = truncateUtf8(draft_place, 400);
         pending_polish_ = false;
         RCLCPP_INFO(
           nodeHandle->get_logger(),
@@ -956,8 +921,22 @@ public:
             sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
             avatar_timer = nodeHandle->now().seconds();
 
-            if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
-                static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
+            const bool has_target_object =
+              static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
+              static_cast<bool>(avatarStatus.is_target_object_in_right_hand);
+            const bool has_any_object =
+              !avatarStatus.object_in_left_hand.empty() ||
+              !avatarStatus.object_in_right_hand.empty();
+            const bool has_wrong_object = has_any_object && !has_target_object;
+
+            // 用户放下错误物品后，继续保留错误提示4秒再恢复周期提示
+            if (wrong_object_hold_active_ && !has_wrong_object) {
+              wrong_object_hold_active_ = false;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
+              last_direction_hint_sec_ = 0.0;
+            }
+
+            if (has_target_object)
             {
               guideMsg = "Please Keep holding the Object";
               while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
@@ -965,9 +944,9 @@ public:
                 RCLCPP_INFO(nodeHandle->get_logger(), "still waiting");
                 rclcpp::spin_some(nodeHandle);
               }
-              // 该提示保留3秒，期间字幕更新计时器视为0，防止立即被覆盖
+              // 该提示保留4秒，期间字幕更新计时器视为0，防止立即被覆盖
               last_direction_hint_sec_ = 0.0;
-              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 3.0;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
 
               // 抓取正确后立即朝第三阶段目的地方向转向，给受试者即时方向提示
               moveBaseJointTrajectory(
@@ -979,14 +958,15 @@ public:
               step             = GuideForPlacement;
               isRequestReceived = true;
               last_wrong_object_name_.clear();
+              wrong_object_hold_active_ = false;
               break;
             }
-            else if (!avatarStatus.object_in_left_hand.empty() ||
-                     !avatarStatus.object_in_right_hand.empty())
+            else if (has_wrong_object)
             {
               const std::string wrong_object = !avatarStatus.object_in_left_hand.empty()
                                              ? avatarStatus.object_in_left_hand
                                              : avatarStatus.object_in_right_hand;
+              wrong_object_hold_active_ = true;
               if (wrong_object != last_wrong_object_name_)
               {
                 guideMsg = "This is not the object, Please try again!";
@@ -995,6 +975,8 @@ public:
                   RCLCPP_INFO(nodeHandle->get_logger(), "still waiting_2");
                   rclcpp::spin_some(nodeHandle);
                 }
+                // 抓错提示保留4秒，避免被后续提示瞬间覆盖
+                subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
                 last_wrong_object_name_ = wrong_object;
               }
               break;
@@ -1003,35 +985,10 @@ public:
 
           if (isRequestReceived)
           {
+            // 仅保留周期分支发送 guidance，request 分支不再主动发提示词
             moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
-
-            guideMsg = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
-                                                  : polished_pick_base_;
-
-            if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
-                static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
-            {
-              double obj_x  = taskInfo.target_object.position.x;
-              double obj_y  = taskInfo.target_object.position.y;
-              double obj_z  = taskInfo.target_object.position.z;
-              double dest_x = taskInfo.destination.position.x;
-              double dest_y = taskInfo.destination.position.y;
-              double dest_z = taskInfo.destination.position.z;
-
-              double distance = std::sqrt(
-                std::pow(obj_x - dest_x, 2) +
-                std::pow(obj_y - dest_y, 2) +
-                std::pow(obj_z - dest_z, 2));
-
-              (void)distance;  // 原 ROS1 中只是计算并打印标记，这里保持逻辑但不额外输出
-              RCLCPP_INFO(nodeHandle->get_logger(), "Distance obj->dest computed");
-            }
-
-            if (speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
-            {
-              time            = nodeHandle->now();
-              isRequestReceived = false;
-            }
+            time = nodeHandle->now();
+            isRequestReceived = false;
           }
           break;
         }
@@ -1139,16 +1096,90 @@ std::string HumanNavigationSample::escapeJsonString(const std::string & s)
 std::string HumanNavigationSample::toReadableName(const std::string & name)
 {
   std::string s = name;
-  while (!s.empty() && std::isdigit(static_cast<unsigned char>(s.back())))
-  {
-    s.pop_back();
-  }
-  if (!s.empty() && s.back() == '_')
-  {
-    s.pop_back();
+  // 常见 Unity 后缀，先去掉，避免影响尾部噪声识别（如 C01(Clone)）
+  for (const std::string tag : {std::string("(Clone)"), std::string("(clone)")}) {
+    size_t pos = std::string::npos;
+    while ((pos = s.find(tag)) != std::string::npos) {
+      s.erase(pos, tag.size());
+    }
   }
   std::replace(s.begin(), s.end(), '_', ' ');
-  return s;
+
+  // 压缩多空格并分词，便于仅清理 Unity 结尾噪声（如 C01 / C 02 / _A）
+  std::vector<std::string> tokens;
+  {
+    std::istringstream iss(s);
+    std::string t;
+    while (iss >> t) {
+      tokens.push_back(t);
+    }
+  }
+  auto stripEdgePunct = [](const std::string & t) {
+    size_t b = 0;
+    size_t e = t.size();
+    while (b < e && !std::isalnum(static_cast<unsigned char>(t[b]))) {
+      ++b;
+    }
+    while (e > b && !std::isalnum(static_cast<unsigned char>(t[e - 1]))) {
+      --e;
+    }
+    return (b < e) ? t.substr(b, e - b) : std::string();
+  };
+  auto isSingleLetter = [](const std::string & t) {
+    return t.size() == 1 && std::isalpha(static_cast<unsigned char>(t[0]));
+  };
+  auto isAllDigits = [](const std::string & t) {
+    if (t.empty()) {
+      return false;
+    }
+    for (char ch : t) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  auto isLetterDigits = [&](const std::string & t) {
+    if (t.size() < 2 || !std::isalpha(static_cast<unsigned char>(t[0]))) {
+      return false;
+    }
+    return isAllDigits(t.substr(1));
+  };
+
+  bool changed = true;
+  while (changed && !tokens.empty()) {
+    changed = false;
+    const std::string last = stripEdgePunct(tokens.back());
+    if (isSingleLetter(last) || isLetterDigits(last) || isAllDigits(last)) {
+      tokens.pop_back();
+      changed = true;
+      continue;
+    }
+    // 处理 "C 02" / "c 02" 这种两段后缀
+    if (tokens.size() >= 2 &&
+      isAllDigits(stripEdgePunct(tokens.back())) &&
+      isSingleLetter(stripEdgePunct(tokens[tokens.size() - 2])))
+    {
+      tokens.pop_back();
+      tokens.pop_back();
+      changed = true;
+      continue;
+    }
+  }
+
+  std::ostringstream oss;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (i != 0) {
+      oss << ' ';
+    }
+    oss << tokens[i];
+  }
+  std::string out = oss.str();
+  const std::string out_low = toLowerAscii(out);
+  if (out_low == "cafe set mota table") {
+    return "mota table";
+  }
+  return out;
 }
 
 std::string HumanNavigationSample::toLowerAscii(std::string s)
@@ -1178,6 +1209,104 @@ bool HumanNavigationSample::isRefrigeratorName(const std::string & readable_name
          readable_name_lower.find("fridge") != std::string::npos;
 }
 
+std::string HumanNavigationSample::extractThePhraseLower(const std::string & phrase)
+{
+  if (phrase.empty()) {
+    return "";
+  }
+  const std::string low = toLowerAscii(phrase);
+  const size_t pos = low.find("the ");
+  if (pos != std::string::npos) {
+    return low.substr(pos);
+  }
+  return low;
+}
+
+bool HumanNavigationSample::isFusedSlotName(const std::string & readable_name) const
+{
+  const std::string full = toLowerAscii(readable_name);
+  if (full.find(' ') == std::string::npos) {
+    return false;
+  }
+
+  std::unordered_set<std::string> known;
+  known.reserve(taskInfo.furniture.size() + taskInfo.non_target_objects.size() + 8);
+  for (const auto & f : taskInfo.furniture) {
+    const std::string n = toLowerAscii(toReadableName(f.name));
+    if (!n.empty()) {
+      known.insert(n);
+    }
+  }
+  for (const auto & o : taskInfo.non_target_objects) {
+    const std::string n = toLowerAscii(toReadableName(o.name));
+    if (!n.empty()) {
+      known.insert(n);
+    }
+  }
+
+  size_t pos = full.find(' ');
+  while (pos != std::string::npos) {
+    const std::string left = full.substr(0, pos);
+    const std::string right = (pos + 1 < full.size()) ? full.substr(pos + 1) : std::string();
+    if (!left.empty() && !right.empty() &&
+      known.count(left) > 0 &&
+      known.count(right) > 0 &&
+      left != full && right != full)
+    {
+      return true;
+    }
+    pos = full.find(' ', pos + 1);
+  }
+  return false;
+}
+
+bool HumanNavigationSample::hasReadableObjectName(const std::string & readable_name_lower) const
+{
+  const auto matches = [&](const std::string & raw_name) {
+    return toLowerAscii(toReadableName(raw_name)) == readable_name_lower;
+  };
+  if (matches(taskInfo.target_object.name)) {
+    return true;
+  }
+  for (const auto & f : taskInfo.furniture) {
+    if (matches(f.name)) {
+      return true;
+    }
+  }
+  for (const auto & o : taskInfo.non_target_objects) {
+    if (matches(o.name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HumanNavigationSample::shouldForceSplitCafeMota() const
+{
+  const bool has_cafe_set = hasReadableObjectName("cafe set");
+  const bool has_mota_table = hasReadableObjectName("mota table");
+  const bool has_fused = hasReadableObjectName("cafe set mota table");
+  return has_cafe_set && has_mota_table && !has_fused;
+}
+
+std::string HumanNavigationSample::normalizeKnownFusionPhrase(std::string text) const
+{
+  auto replaceAll = [](std::string & s, const std::string & from, const std::string & to) {
+    size_t pos = s.find(from);
+    while (pos != std::string::npos) {
+      s.replace(pos, from.size(), to);
+      pos = s.find(from, pos + to.size());
+    }
+  };
+  replaceAll(text, "cafe set mota table", "mota table");
+  replaceAll(text, "Cafe Set Mota Table", "mota table");
+  replaceAll(text, "Cafe set mota table", "mota table");
+  replaceAll(text, "cafe_set_mota_table", "mota table");
+  replaceAll(text, "cafe set mota table,", "mota table,");
+  replaceAll(text, "cafe set mota table.", "mota table.");
+  return text;
+}
+
 std::string HumanNavigationSample::getRelationPhraseForPosition(
   double dx, double dy, double dz,
   double size_x, double size_y, double size_z) const
@@ -1185,38 +1314,75 @@ std::string HumanNavigationSample::getRelationPhraseForPosition(
   if (taskInfo.furniture.empty()) {
     return "";
   }
-  int idx = 0;
-  float best = 999999999.0f;
-  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
-    const auto & f = taskInfo.furniture[i];
-    float d = static_cast<float>(std::sqrt(
-      std::pow(dx - f.position.x, 2) +
-      std::pow(dy - f.position.y, 2) +
-      std::pow(dz - f.position.z, 2)));
-    if (d < best) {
-      best = d;
-      idx = static_cast<int>(i);
+  // 简化版 on 判定：
+  // 1) 仅考虑在目标点下方的家具（支撑物 Z 小于物体 Z，即 fz < dz）；
+  // 2) 在下方候选中按水平距离 dxy 最近选支撑物；
+  // 3) 若无下方候选，再回退最近家具作为 near 参照。
+  std::string best_relation_below;
+  double best_below_dxy = 1e12;
+  double best_below_dz = 1e12;
+  std::string nearest_name;
+  double nearest_dist = 1e12;
+
+  for (const auto & f : taskInfo.furniture) {
+    const double fx = f.position.x;
+    const double fy = f.position.y;
+    const double fz = f.position.z;
+    const double dxy = std::sqrt(std::pow(dx - fx, 2) + std::pow(dy - fy, 2));
+    const double d3 = std::sqrt(std::pow(dx - fx, 2) + std::pow(dy - fy, 2) + std::pow(dz - fz, 2));
+    if (d3 < nearest_dist) {
+      nearest_dist = d3;
+      const std::string nearest_readable = toReadableName(f.name);
+      if (!isFusedSlotName(nearest_readable)) {
+        nearest_name = nearest_readable;
+      }
+    }
+
+    const std::string name = toReadableName(f.name);
+    if (isFusedSlotName(name)) {
+      continue;
+    }
+    // 场景中“在物体下方”=> 家具 Z 小于物体 Z
+    const double dz_rel = dz - fz;
+    if (dz_rel <= 0.0) {
+      continue;
+    }
+
+    // 语句生成沿用现有接口，减少外部行为波动
+    const double fx_min = fx - std::abs(size_x) / 2.0;
+    const double fx_max = fx + std::abs(size_x) / 2.0;
+    const double fy_min = fy - std::abs(size_y) / 2.0;
+    const double fy_max = fy + std::abs(size_y) / 2.0;
+    const double fz_min = fz - std::abs(size_z);
+    const double fz_max = fz + std::abs(size_z);
+    const std::string relation = getFurnitureRelation(
+      name, dx, dy, dz,
+      fx_min, fx_max, fy_min, fy_max, fz_min, fz_max);
+    const std::string rel_low = toLowerAscii(relation);
+    const bool support =
+      rel_low.rfind("on the ", 0) == 0 ||
+      rel_low.rfind("in the ", 0) == 0 ||
+      rel_low.rfind("inside the ", 0) == 0;
+    if (!support) {
+      continue;
+    }
+
+    if (dxy < best_below_dxy ||
+      (std::abs(dxy - best_below_dxy) < 1e-6 && dz_rel < best_below_dz))
+    {
+      best_below_dxy = dxy;
+      best_below_dz = dz_rel;
+      best_relation_below = relation;
     }
   }
-  const auto & fn = taskInfo.furniture[idx];
-  double fx = fn.position.x, fy = fn.position.y, fz = fn.position.z;
-  double fx_min = fx - std::abs(size_x) / 2.0;
-  double fx_max = fx + std::abs(size_x) / 2.0;
-  double fy_min = fy - std::abs(size_y) / 2.0;
-  double fy_max = fy + std::abs(size_y) / 2.0;
-  double fz_min = fz - std::abs(size_z);
-  double fz_max = fz + std::abs(size_z);
 
-  std::string furniture_name = fn.name;
-  std::replace(furniture_name.begin(), furniture_name.end(), '_', ' ');
-
-  bool within = (dx <= fx_max && dx >= fx_min && dy <= fy_max && dy >= fy_min);
-  if (within) {
-    return getFurnitureRelation(
-      furniture_name, dx, dy, dz,
-      fx_min, fx_max, fy_min, fy_max, fz_min, fz_max);
+  if (!best_relation_below.empty()) {
+    return best_relation_below;
   }
-  return "near the " + furniture_name;
+  if (!nearest_name.empty()) {
+    return "near the " + nearest_name;
+  }
+  return "";
 }
 
 std::string HumanNavigationSample::nearestFurnitureName(double x, double y, double z) const
@@ -1226,8 +1392,13 @@ std::string HumanNavigationSample::nearestFurnitureName(double x, double y, doub
   }
   size_t idx = 0;
   double best = 1e12;
+  bool found = false;
   for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
     const auto & f = taskInfo.furniture[i];
+    const std::string readable = toReadableName(f.name);
+    if (isFusedSlotName(readable)) {
+      continue;
+    }
     const double d = std::sqrt(
       std::pow(x - f.position.x, 2) +
       std::pow(y - f.position.y, 2) +
@@ -1235,108 +1406,202 @@ std::string HumanNavigationSample::nearestFurnitureName(double x, double y, doub
     if (d < best) {
       best = d;
       idx = i;
+      found = true;
     }
+  }
+  if (!found) {
+    return "";
   }
   return "the " + toReadableName(taskInfo.furniture[idx].name);
 }
 
-std::string HumanNavigationSample::nearestLargeLandmarkName(
-  double x, double y, double z,
-  double min_distance_m,
-  double max_distance_m,
-  const std::string & avoid_name_lower) const
+std::string HumanNavigationSample::buildPickOnSlotPhrase(
+  double px, double py, double pz,
+  const std::unordered_set<std::string> & banned_lower) const
 {
-  std::string best_name;
-  double best = 1e12;
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
 
-  auto consider_name = [&](const std::string & raw_name, double ox, double oy, double oz) {
-    const double d = std::sqrt(
-      std::pow(x - ox, 2) +
-      std::pow(y - oy, 2) +
-      std::pow(z - oz, 2));
-    if (d < min_distance_m || d > max_distance_m) {
-      return;
-    }
-    const std::string readable = toReadableName(raw_name);
-    const std::string readable_lower = toLowerAscii(readable);
-    if (!isLargeLandmarkName(readable_lower)) {
-      return;
+  // 支撑关系优先：抓取前先判断目标物体是否在家具表面/容器内
+  const std::string rel = getRelationPhraseForPosition(px, py, pz, 0.3, 0.3, 0.3);
+  const std::string rel_low = toLowerAscii(rel);
+  const bool is_support_relation =
+    rel_low.rfind("on the ", 0) == 0 ||
+    rel_low.rfind("in the ", 0) == 0 ||
+    rel_low.rfind("inside the ", 0) == 0;
+  if (is_support_relation && banned_lower.count(extractThePhraseLower(rel)) == 0) {
+    return rel;
+  }
+
+  std::string best_within;
+  std::string best_any;
+  double best_within_d = 1e12;
+  double best_any_d = 1e12;
+  double best_within_dz = 1e12;
+  double best_any_dz = 1e12;
+
+  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
+    const auto & f = taskInfo.furniture[i];
+    const std::string readable = toReadableName(f.name);
+    if (isFusedSlotName(readable)) {
+      continue;
     }
     const std::string cand = "the " + readable;
     const std::string cand_lower = toLowerAscii(cand);
-    if (!avoid_name_lower.empty() && cand_lower == avoid_name_lower) {
-      return;
+    if (banned_lower.count(cand_lower) > 0) {
+      continue;
     }
-    if (d < best) {
-      best = d;
-      best_name = cand;
+    // 支撑物在“下方” => furniture.z < object.z
+    const double dz_rel = pz - f.position.z;
+    if (dz_rel <= 0.0) {
+      continue;
     }
-  };
+    const double d3 = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2) +
+      std::pow(pz - f.position.z, 2));
+    const double dxy = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2));
+    // on 搜索初始规则：0-1.5m 内、且在下方的不可交互物品
+    if (d3 <= 1.5 &&
+      (dxy < best_within_d || (std::abs(dxy - best_within_d) < 1e-6 && dz_rel < best_within_dz)))
+    {
+      best_within_d = dxy;
+      best_within_dz = dz_rel;
+      best_within = cand;
+    }
+    if (dxy < best_any_d || (std::abs(dxy - best_any_d) < 1e-6 && dz_rel < best_any_dz)) {
+      best_any_d = dxy;
+      best_any_dz = dz_rel;
+      best_any = cand;
+    }
+  }
 
-  for (const auto & f : taskInfo.furniture) {
-    consider_name(f.name, f.position.x, f.position.y, f.position.z);
+  if (!best_within.empty()) {
+    return "on " + best_within;
   }
-  for (const auto & o : taskInfo.non_target_objects) {
-    consider_name(o.name, o.position.x, o.position.y, o.position.z);
+  if (!best_any.empty()) {
+    return "on " + best_any;
   }
-  return best_name;
+  return "";
 }
 
-// near sth：以中心点(x,y,z)为基准，在 min~max 米内扫描所有大型不可交互物品，
-// 记录最近的两项；若最近的一项与 on 后的物品重合，则用第二近的
+std::string HumanNavigationSample::buildOnSlotPhrase(
+  double px, double py, double pz,
+  double sx, double sy, double sz,
+  const std::unordered_set<std::string> & banned_lower) const
+{
+  const std::string rel = getRelationPhraseForPosition(px, py, pz, sx, sy, sz);
+  const std::string low = toLowerAscii(rel);
+  if ((low.rfind("on the ", 0) == 0 || low.rfind("in the ", 0) == 0) &&
+    banned_lower.count(extractThePhraseLower(rel)) == 0)
+  {
+    return rel;
+  }
+  if (taskInfo.furniture.empty()) {
+    return "";
+  }
+
+  std::string best;
+  double best_d = 1e12;
+  for (const auto & f : taskInfo.furniture) {
+    const std::string readable = toReadableName(f.name);
+    if (isFusedSlotName(readable)) {
+      continue;
+    }
+    const std::string cand = "the " + readable;
+    const std::string cand_lower = toLowerAscii(cand);
+    if (banned_lower.count(cand_lower) > 0) {
+      continue;
+    }
+    const double d = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2) +
+      std::pow(pz - f.position.z, 2));
+    if (d < best_d) {
+      best_d = d;
+      best = cand;
+    }
+  }
+  return best.empty() ? "" : ("on " + best);
+}
+
+// near：0-3m 扫描可交互+不可交互；按最近项规则去重/排重后选第一个合格项
 std::string HumanNavigationSample::nearestNearLandmarkName(
   double x, double y, double z,
   double min_distance_m,
   double max_distance_m,
-  const std::string & avoid_name_lower) const
+  const std::unordered_set<std::string> & banned_lower) const
 {
-  double d1 = 1e12, d2 = 1e12;
-  std::string name1, name2;
+  struct Candidate
+  {
+    std::string phrase;
+    std::string lower;
+    double distance;
+    bool is_interactive;
+  };
+  std::vector<Candidate> candidates;
 
-  auto consider = [&](const std::string & raw_name, double ox, double oy, double oz) {
+  auto append_candidate = [&](const std::string & raw_name, double ox, double oy, double oz, bool is_interactive) {
     const double d = std::sqrt(
       std::pow(x - ox, 2) + std::pow(y - oy, 2) + std::pow(z - oz, 2));
     if (d < min_distance_m || d > max_distance_m) {
       return;
     }
     const std::string readable = toReadableName(raw_name);
-    const std::string cand = "the " + readable;
-    const std::string cand_lower = toLowerAscii(cand);
-    if (!isLargeLandmarkName(cand_lower)) {
-      return;  // 仅大型不可交互：table, cabinet, shelf, refrigerator 等
-    }
-    // 只记录“不同物品名”的前两近，避免同名占据第1/第2导致误选
-    if (!name1.empty() && cand_lower == toLowerAscii(name1)) {
+    if (isFusedSlotName(readable)) {
       return;
     }
-    if (d < d1) {
-      d2 = d1;
-      name2 = name1;
-      d1 = d;
-      name1 = cand;
-    } else if (d < d2) {
-      d2 = d;
-      name2 = cand;
-    }
+    const std::string cand = "the " + readable;
+    const std::string cand_lower = toLowerAscii(cand);
+    candidates.push_back(Candidate{cand, cand_lower, d, is_interactive});
   };
 
   for (const auto & f : taskInfo.furniture) {
-    consider(f.name, f.position.x, f.position.y, f.position.z);
+    append_candidate(f.name, f.position.x, f.position.y, f.position.z, false);
   }
   for (const auto & o : taskInfo.non_target_objects) {
-    consider(o.name, o.position.x, o.position.y, o.position.z);
+    append_candidate(o.name, o.position.x, o.position.y, o.position.z, true);
   }
+  append_candidate(
+    taskInfo.target_object.name,
+    taskInfo.target_object.position.x,
+    taskInfo.target_object.position.y,
+    taskInfo.target_object.position.z,
+    true);
 
-  if (name1.empty()) {
+  if (candidates.empty()) {
     return "";
   }
-  if (avoid_name_lower.empty() || toLowerAscii(name1) != avoid_name_lower) {
-    return name1;  // 最近的一项不与 on 重合，用最近的
+
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
+    return a.distance < b.distance;
+  });
+
+  std::unordered_map<std::string, int> interactive_counts;
+  for (const auto & c : candidates) {
+    if (c.is_interactive) {
+      interactive_counts[c.lower] += 1;
+    }
   }
-  if (!name2.empty() && toLowerAscii(name2) != avoid_name_lower) {
-    return name2;  // 最近的一项与 on 重合，用第二近的（且第二近也不与 on 重合）
+
+  std::unordered_set<std::string> rejected = banned_lower;
+  for (const auto & c : candidates) {
+    if (rejected.count(c.lower) > 0) {
+      continue;
+    }
+    if (!c.is_interactive) {
+      return c.phrase;
+    }
+    if (interactive_counts[c.lower] > 1) {
+      rejected.insert(c.lower);
+      continue;
+    }
+    return c.phrase;
   }
-  return "";  // 第二近也为空或与 on 重合，不加 near
+  return "";
 }
 
 std::string HumanNavigationSample::buildStrictPickTemplate() const
@@ -1345,28 +1610,36 @@ std::string HumanNavigationSample::buildStrictPickTemplate() const
   const double tx = taskInfo.target_object.position.x;
   const double ty = taskInfo.target_object.position.y;
   const double tz = taskInfo.target_object.position.z;
-  // 抓取模板严格固定为: "Please grab <target> on <A>, near <B>..."
-  // 因此这里强制主介词为 on，仅取 furniture 名词位，避免出现 "near ..., near ..."
-  std::string on_target = nearestFurnitureName(tx, ty, tz);  // "the <furniture>"
-  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
-  std::string avoid;
-  if (!on_phrase.empty()) {
-    const size_t pos = on_phrase.find("the ");
-    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
+  std::unordered_set<std::string> on_banned = {toLowerAscii(target)};
+  const std::string place_slot = buildOnSlotPhrase(
+    taskInfo.destination.position.x, taskInfo.destination.position.y, taskInfo.destination.position.z,
+    std::abs(taskInfo.destination.size.x), std::abs(taskInfo.destination.size.y), std::abs(taskInfo.destination.size.z),
+    on_banned);
+  const std::string place_the = extractThePhraseLower(place_slot);
+  if (!place_the.empty()) {
+    on_banned.insert(place_the);
   }
-  std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, avoid);
+  // 抓取前 on：目标物下方大型不可交互物体，先 0-2m，失败再扩圈
+  const std::string on_slot = buildPickOnSlotPhrase(tx, ty, tz, on_banned);
+  std::unordered_set<std::string> near_banned = on_banned;
+  const std::string on_the = extractThePhraseLower(on_slot);
+  if (!on_the.empty()) {
+    near_banned.insert(on_the);
+  }
+  const std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, near_banned);
 
-  if (!on_phrase.empty() && !nearby.empty()) {
-    return "Please grab " + target + " " + on_phrase + ", near " + nearby +
-           ",where the robot points.";
+  if (!on_slot.empty() && !nearby.empty()) {
+    return normalizeKnownFusionPhrase(
+      "Please grab " + target + " " + on_slot + ", near " + nearby +
+      ",where the robot points.");
   }
-  if (!on_phrase.empty()) {
-    return "Please grab " + target + " " + on_phrase + ",where the robot points.";
+  if (!on_slot.empty()) {
+    return normalizeKnownFusionPhrase("Please grab " + target + " " + on_slot + ",where the robot points.");
   }
   if (!nearby.empty()) {
-    return "Please grab " + target + " near " + nearby + ",where the robot points.";
+    return normalizeKnownFusionPhrase("Please grab " + target + " near " + nearby + ",where the robot points.");
   }
-  return "Please grab " + target + ",where the robot points.";
+  return normalizeKnownFusionPhrase("Please grab " + target + ",where the robot points.");
 }
 
 std::string HumanNavigationSample::buildStrictPlaceTemplate() const
@@ -1374,27 +1647,28 @@ std::string HumanNavigationSample::buildStrictPlaceTemplate() const
   const double dx = taskInfo.destination.position.x;
   const double dy = taskInfo.destination.position.y;
   const double dz = taskInfo.destination.position.z;
-  // 放置模板严格固定为: "Please place it on <A>, near <B>..."
-  // 强制主介词为 on，仅取 furniture 名词位，避免出现 "place it near ..."
-  std::string on_target = nearestFurnitureName(dx, dy, dz);  // "the <furniture>"
-  std::string on_phrase = on_target.empty() ? "" : ("on " + on_target);
-  std::string avoid;
-  if (!on_phrase.empty()) {
-    const size_t pos = on_phrase.find("the ");
-    avoid = (pos != std::string::npos) ? toLowerAscii(on_phrase.substr(pos)) : "";
+  const double sx = std::abs(taskInfo.destination.size.x);
+  const double sy = std::abs(taskInfo.destination.size.y);
+  const double sz = std::abs(taskInfo.destination.size.z);
+  std::unordered_set<std::string> on_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  const std::string on_slot = buildOnSlotPhrase(dx, dy, dz, sx, sy, sz, on_banned);
+  std::unordered_set<std::string> near_banned = on_banned;
+  const std::string on_the = extractThePhraseLower(on_slot);
+  if (!on_the.empty()) {
+    near_banned.insert(on_the);
   }
-  std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, avoid);
+  const std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, near_banned);
 
-  if (!on_phrase.empty() && !nearby.empty()) {
-    return "Please place it " + on_phrase + ", near " + nearby + ",where the robot points.";
+  if (!on_slot.empty() && !nearby.empty()) {
+    return normalizeKnownFusionPhrase("Please place it " + on_slot + ", near " + nearby + ",where the robot points.");
   }
-  if (!on_phrase.empty()) {
-    return "Please place it " + on_phrase + ",where the robot points.";
+  if (!on_slot.empty()) {
+    return normalizeKnownFusionPhrase("Please place it " + on_slot + ",where the robot points.");
   }
   if (!nearby.empty()) {
-    return "Please place it near " + nearby + ",where the robot points.";
+    return normalizeKnownFusionPhrase("Please place it near " + nearby + ",where the robot points.");
   }
-  return "Please place it where the robot points.";
+  return normalizeKnownFusionPhrase("Please place it where the robot points.");
 }
 
 std::string HumanNavigationSample::getDirectionHint(
@@ -1440,16 +1714,47 @@ std::string HumanNavigationSample::buildContextJson() const
   const double dx = taskInfo.destination.position.x;
   const double dy = taskInfo.destination.position.y;
   const double dz = taskInfo.destination.position.z;
+  const double sx = std::abs(taskInfo.destination.size.x);
+  const double sy = std::abs(taskInfo.destination.size.y);
+  const double sz = std::abs(taskInfo.destination.size.z);
 
-  std::string pick_on = nearestFurnitureName(tx, ty, tz);   // "the <furniture>"
-  std::string place_on = nearestFurnitureName(dx, dy, dz);
-
-  std::string pick_near = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, toLowerAscii(pick_on));
-  std::string place_near = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, toLowerAscii(place_on));
+  std::unordered_set<std::string> pick_on_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  const std::string place_slot = buildOnSlotPhrase(dx, dy, dz, sx, sy, sz, pick_on_banned);
+  const std::string place_the = extractThePhraseLower(place_slot);
+  if (!place_the.empty()) {
+    pick_on_banned.insert(place_the);
+  }
+  const std::string pick_slot = buildPickOnSlotPhrase(tx, ty, tz, pick_on_banned);
+  auto extractThePhrase = [](const std::string & s) -> std::string {
+    if (s.empty()) {
+      return "";
+    }
+    const std::string low = HumanNavigationSample::toLowerAscii(s);
+    const size_t pos = low.find("the ");
+    if (pos != std::string::npos) {
+      return s.substr(pos);
+    }
+    return s;
+  };
+  std::string pick_on = extractThePhrase(pick_slot);
+  std::string place_on = extractThePhrase(place_slot);
+  std::unordered_set<std::string> pick_near_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  if (!pick_on.empty()) {
+    pick_near_banned.insert(toLowerAscii(pick_on));
+  }
+  if (!place_on.empty()) {
+    pick_near_banned.insert(toLowerAscii(place_on));
+  }
+  std::unordered_set<std::string> place_near_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
+  if (!place_on.empty()) {
+    place_near_banned.insert(toLowerAscii(place_on));
+  }
+  std::string pick_near = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, pick_near_banned);
+  std::string place_near = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, place_near_banned);
 
   std::ostringstream oss;
   oss << "{\"environment_id\":\"" << escapeJsonString(taskInfo.environment_id) << "\""
-      << ",\"target_prefab\":\"" << escapeJsonString(taskInfo.target_object.name) << "\""
+      << ",\"target_prefab\":\"" << escapeJsonString(toReadableName(taskInfo.target_object.name)) << "\""
       << ",\"pick_on\":\"" << escapeJsonString(pick_on) << "\""
       << ",\"pick_near\":\"" << escapeJsonString(pick_near) << "\""
       << ",\"place_on\":\"" << escapeJsonString(place_on) << "\""
@@ -1460,82 +1765,9 @@ std::string HumanNavigationSample::buildContextJson() const
 std::string HumanNavigationSample::polishGuidance(
   const std::string & draft, const std::string & phase, const std::string & context_json)
 {
-  if (draft.empty()) {
-    return draft;
-  }
-  if (!use_llm_rewrite_ || !llm_client_) {
-    return truncateUtf8(draft, 400);
-  }
-  if (!llm_client_->wait_for_service(std::chrono::milliseconds(500))) {
-    RCLCPP_WARN(
-      nodeHandle->get_logger(),
-      "LLM service not available within 500ms, using draft");
-    return truncateUtf8(draft, 400);
-  }
-
-  auto request = std::make_shared<human_nav_llm_ros2::srv::RewriteGuidance::Request>();
-  request->draft = draft;
-  request->phase = phase;
-  request->context_json = context_json.empty() ? "{}" : context_json;
-
-  auto future = llm_client_->async_send_request(request);
-  const std::chrono::duration<double> timeout(llm_timeout_sec_);
-  const auto ret = rclcpp::spin_until_future_complete(nodeHandle, future, timeout);
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
-    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite future failed or timed out, using draft");
-    return truncateUtf8(draft, 400);
-  }
-
-  const human_nav_llm_ros2::srv::RewriteGuidance::Response::SharedPtr response = future.get();
-  if (!response || !response->success || response->rewritten.empty()) {
-    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite returned failure or empty, using draft");
-    return truncateUtf8(draft, 400);
-  }
-
-  const std::string rewritten = truncateUtf8(response->rewritten, 400);
-
-  // D: output guardrail. If rewritten text does not match the expected stage pattern, fallback to draft.
-  auto toLower = [](std::string s) {
-      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-      });
-      return s;
-    };
-  const std::string low = toLower(rewritten);
-  const std::string phase_low = toLower(phase);
-
-  bool valid = true;
-  // 禁止两物品拼接：如 cafe set + mota table -> "cafe set mota table"
-  const bool fused_items = (low.find("set mota") != std::string::npos) ||
-                          (low.find("coffee set mota") != std::string::npos) ||
-                          (low.find("cafe set mota") != std::string::npos) ||
-                          (low.find("desk lamp") != std::string::npos);
-  if (fused_items) {
-    valid = false;
-  } else if (phase_low == "pick") {
-    const bool has_prefix = low.find("please grab the") != std::string::npos;
-    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
-    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
-                                (low.find(", near ") != std::string::npos);
-    valid = has_prefix && has_on && near_clause_ok;
-  } else if (phase_low == "place") {
-    const bool has_prefix = low.find("please place it") != std::string::npos;
-    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
-    const bool has_pointing = low.find("where the robot points") != std::string::npos;
-    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
-                                (low.find(", near ") != std::string::npos);
-    valid = has_prefix && has_on && has_pointing && near_clause_ok;
-  }
-
-  if (!valid) {
-    RCLCPP_WARN(
-      nodeHandle->get_logger(),
-      "LLM rewrite rejected by stage guardrail (phase=%s), using draft",
-      phase.c_str());
-    return truncateUtf8(draft, 400);
-  }
-
-  return rewritten;
+  (void)phase;
+  (void)context_json;
+  return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
 }
 
 int main(int argc, char ** argv)
