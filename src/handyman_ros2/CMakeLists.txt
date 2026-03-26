@@ -25,7 +25,12 @@ find_package(handyman_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(OpenCV REQUIRED)
 
-add_executable(handyman_sample src/handyman_sample.cpp)
+include_directories(include)
+
+add_executable(handyman_sample
+  src/handyman_sample.cpp
+  src/room_navigation.cpp
+)
 ament_target_dependencies(handyman_sample
   rclcpp
   rclcpp_action
@@ -70,5 +75,36 @@ install(DIRECTORY
   param
   DESTINATION share/${PROJECT_NAME}
 )
+
+install(DIRECTORY include/
+  DESTINATION include
+)
+
+add_library(placement_navigation_lib
+  src/placement_navigation.cpp
+)
+target_include_directories(placement_navigation_lib PUBLIC include)
+
+target_link_libraries(handyman_sample
+  placement_navigation_lib
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(room_navigation_test
+    test/room_navigation_test.cpp
+    src/room_navigation.cpp
+  )
+  target_include_directories(room_navigation_test PUBLIC include)
+
+  ament_add_gtest(placement_navigation_test
+    test/placement_navigation_test.cpp
+  )
+  target_include_directories(placement_navigation_test PRIVATE include)
+  target_link_libraries(placement_navigation_test
+    placement_navigation_lib
+  )
+endif()
 
 ament_package()
