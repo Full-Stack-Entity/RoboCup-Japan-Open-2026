@@ -22,6 +22,7 @@
 
 #include <handyman_msgs/msg/handyman_msg.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <handyman_ros2/room_navigation.hpp>
 
 #include <iostream>
 #include <cstring>
@@ -1105,156 +1106,17 @@ private:
   }
 
   geometry_msgs::msg::PoseStamped roomLocation(std::string room, int variation){
-    // LayoutA
-    auto LayoutA_living_room = makePoseStamped(2.0, 1, 1.57);
-    auto LayoutA_living_room_2 = makePoseStamped(2.5, 4.08, 3.14);
-    auto LayoutA_bedroom = makePoseStamped(2.57, -4.31, 0);
-    auto LayoutA_bedroom2 = makePoseStamped(8.64, -5.7, 0);
-    auto LayoutA_lobby2 = makePoseStamped(1.0, -3.6, 0);
-    auto LayoutA_lobby = makePoseStamped(1.2, -6.16, -1.57);
-    auto LayoutA_kitchen = makePoseStamped(8.5, 2.8, 3.14);
-    auto LayoutA_kitchen2 = makePoseStamped(5.0, 4.2, -0.7);
-    (void)LayoutA_kitchen2;
-
-    // LayoutB
-    auto LayoutB_living_room = makePoseStamped(3.5, 9.6, 2.4);
-    auto LayoutB_living_room2 = makePoseStamped(1.84, 10.2, 0);
-    auto LayoutB_lobby = makePoseStamped(1.0, 0, 0);
-    auto LayoutB_lobby2 = makePoseStamped(2.5, 2.0, 0);
-    auto LayoutB_kitchen = makePoseStamped(5.5, -1.13, 0);
-    auto LayoutB_kitchen2 = makePoseStamped(8.42, -1.13, 0);
-
-    // LayoutC
-    auto LayoutC_living_room = makePoseStamped(0.5, 2.0, 1.57);
-    auto LayoutC_living_room2 = makePoseStamped(0.42, 3.48, 2.355);
-    auto LayoutC_living_room3 = makePoseStamped(4.5, 3.48, 0.0);
-    auto LayoutC_living_room4 = makePoseStamped(4.5, -0.65, 0.0);
-    auto LayoutC_bedroom = makePoseStamped(0.1, 6.9, 0.0);
-    auto LayoutC_bedroom2 = makePoseStamped(3.0, 8.0, 0.0);
-    auto LayoutC_kitchen = makePoseStamped(6.5, -1.2, 0);
-    auto LayoutC_kitchen2 = makePoseStamped(7.8, 1.2, 0);
-    auto LayoutC_kitchen3 = makePoseStamped(6.5, 3.9, 0);
-
-    // LayoutD
-    auto LayoutD_living_room = makePoseStamped(1.0, 0.0, 0);
-    auto LayoutD_living_room_2 = makePoseStamped(3.5, 0.0, 0);
-    auto LayoutD_bedroom = makePoseStamped(4.0, -8.5, 0);
-    auto LayoutD_bedroom2 = makePoseStamped(1.69, -8.0, 0.0);
-    auto LayoutD_lobby = makePoseStamped(-1.86, -8.38, 0.0);
-    auto LayoutD_lobby2 = makePoseStamped(-4.86, -8.7, 0.0);
-
-    geometry_msgs::msg::PoseStamped location;
-    std::string env_lower = lower(ENVIRONMENT);
-    if (env_lower.compare("layout2019hm01") == 0){
-        if(room == "living"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutA_living_room;
-          else if (variation == 1)
-            location = LayoutA_living_room_2;
-          }
-        else if(room == "bedroom"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutA_bedroom;
-          else if (variation == 1)
-            location = LayoutA_bedroom2;
-          }
-        else if(room == "lobby"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutA_lobby;
-          else if (variation == 1)
-            location = LayoutA_lobby2;
-           }
-        else if(room == "kitchen"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutA_kitchen;
-          }
-    }
-    else if (env_lower.compare("layout2019hm02") == 0){
-         if(room == "living"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutB_living_room;
-          else if (variation == 1)
-            location = LayoutB_living_room2;
-            }
-        else if(room == "lobby"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutB_lobby;
-          else if (variation == 1)
-            location = LayoutB_lobby2;
-            }
-        else if(room == "kitchen"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutB_kitchen;
-          else if (variation == 1)
-            location = LayoutB_kitchen2;
-             }
-    }
-    else if (env_lower.compare("layout2020hm01") == 0){
-      if(room == "living"){
-          max_patrol = 4;
-          if(variation == 0)
-            location = LayoutC_living_room;
-          else if (variation == 1)
-            location = LayoutC_living_room2;
-          else if(variation == 2 )
-            location = LayoutC_living_room3;
-          else if (variation == 3)
-            location = LayoutC_living_room4;
-           }
-        else if(room == "bedroom"){
-          max_patrol = 2;
-          if( variation == 0)
-            location = LayoutC_bedroom;
-          else if(variation == 1)
-            location = LayoutC_bedroom2;
-          }
-        else if(room == "kitchen"){
-          max_patrol = 3;
-          if( variation == 0)
-            location = LayoutC_kitchen;
-          else if(variation == 1)
-            location = LayoutC_kitchen2;
-          else if(variation == 2)
-            location = LayoutC_kitchen3;
-          }
-    }
-    else if (env_lower.compare("layout2021hm01") == 0){
-        if(room == "living"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutD_living_room;
-          else if (variation == 1)
-            location = LayoutD_living_room_2;
-        }
-        else if(room == "bedroom"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutD_bedroom;
-          else if (variation == 1)
-            location = LayoutD_bedroom2;
-        }
-        else if(room == "lobby"){
-          max_patrol = 2;
-          if(variation == 0)
-            location = LayoutD_lobby;
-          else if (variation == 1)
-            location = LayoutD_lobby2;
-        }
+    const auto patrol_waypoints = handyman_ros2::roomPatrolWaypoints(ENVIRONMENT, room);
+    if (patrol_waypoints.empty()) {
+      max_patrol = 1;
+      RCLCPP_WARN(node_->get_logger(), "No patrol waypoint found for room '%s' in environment '%s'", room.c_str(), ENVIRONMENT.c_str());
+      return makePoseStamped(0.5, 2.0, 1.57);
     }
 
-    else{
-      location = LayoutC_living_room;
-      RCLCPP_INFO(node_->get_logger(), "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$WELP STH UNDESIRABLE HAPPENED");
-    }
-
-    return location;
+    max_patrol = static_cast<int>(patrol_waypoints.size());
+    const int waypoint_index = (variation >= 0 && variation < max_patrol) ? variation : 0;
+    const auto &waypoint = patrol_waypoints[waypoint_index];
+    return makePoseStamped(waypoint.x, waypoint.y, waypoint.yaw);
   }
 
   tf2::Transform getTfBase(tf2_ros::Buffer &tf_buffer)
@@ -1590,29 +1452,22 @@ public:
               double robot_x = tf_stamped.transform.translation.x;
               double robot_y = tf_stamped.transform.translation.y;
 
-              auto first_pose = roomLocation(room_list[0], 0);
-              bool in_room = false;
-              for(int v = 0; v < max_patrol; v++) {
-                auto room_pose = (v == 0) ? first_pose : roomLocation(room_list[0], v);
-                double dx = robot_x - room_pose.pose.position.x;
-                double dy = robot_y - room_pose.pose.position.y;
-                double dist = std::sqrt(dx*dx + dy*dy);
-                if(dist < 3.5) {
-                  in_room = true;
-                  RCLCPP_INFO(node_->get_logger(),
-                    "Robot at (%.2f, %.2f) is %.2fm from patrol point %d in '%s'",
-                    robot_x, robot_y, dist, v, room_list[0].c_str());
-                  break;
-                }
-              }
+              const auto patrol_waypoints = handyman_ros2::roomPatrolWaypoints(ENVIRONMENT, room_list[0]);
+              const auto room_entry_decision = handyman_ros2::decideRoomEntryAction(
+                room_reached,
+                nav_goal_sent_,
+                robot_x,
+                robot_y,
+                patrol_waypoints,
+                3.5);
 
-              if(in_room) {
+              if(room_entry_decision.send_room_reached_message) {
                 RCLCPP_INFO(node_->get_logger(),
                   "Already in target room '%s', skipping navigation, starting search",
                   room_list[0].c_str());
                 sendMessage(pub_msg, MSG_ROOM_REACHED);
                 room_reached = true;
-              } else {
+              } else if (room_entry_decision.should_send_navigation_goal) {
                 RCLCPP_INFO(node_->get_logger(),
                   "Robot at (%.2f, %.2f) is NOT in target room '%s', navigating via Nav2...",
                   robot_x, robot_y, room_list[0].c_str());
@@ -1622,7 +1477,7 @@ public:
             }
           }
 
-          if (!nav_goal_sent_) {
+          if (!room_reached && !nav_goal_sent_) {
             found_object = false;
             auto goal_pose = roomLocation(room_list[0],patrol_step);
             RCLCPP_INFO(node_->get_logger(), "Assigned goal for room: %s, x: %.3f, y: %.3f", room_list[0].c_str(), goal_pose.pose.position.x, goal_pose.pose.position.y);
