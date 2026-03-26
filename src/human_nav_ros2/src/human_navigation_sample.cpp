@@ -13,7 +13,6 @@
 #include <human_navigation_msgs/msg/human_navi_avatar_status.hpp>
 #include <human_navigation_msgs/msg/human_navi_object_status.hpp>
 
-#include "human_nav_llm_ros2/srv/rewrite_guidance.hpp"
 
 // 原 ROS1: tf/transform_listener.h -> ROS2: tf2_ros + tf2_geometry_msgs
 #include <tf2_ros/transform_listener.h>
@@ -135,13 +134,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_base_twist_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr pub_base_trajectory_;
 
-  // Subtask C: optional local LLM rewrite (see docs/SUBTASK2_LLM_方案分析.md)
-  bool use_llm_rewrite_{false};
-  double llm_timeout_sec_{2.0};
-  std::string llm_service_name_{"/rewrite_guidance"};
-  bool strict_template_mode_{true};
-  rclcpp::Client<human_nav_llm_ros2::srv::RewriteGuidance>::SharedPtr llm_client_;
-  /// 抓取阶段骨架句（已 polish 或与原文一致）；周期性距离行在此基础上拼接，不再调用 LLM
+  /// 抓取阶段骨架句；周期性距离行在此基础上拼接
   std::string polished_pick_base_;
   /// 放置阶段骨架句
   std::string polished_place_base_;
@@ -150,10 +143,11 @@ private:
 
   /// 方位提示节流：上次发送时间(秒)、间隔秒数（规则要求≤15条，不再实时距离）
   double last_direction_hint_sec_{0.0};
-  double direction_hint_interval_sec_{7.0};
+  double direction_hint_interval_sec_{10.0};
   /// 抓取正确提示后，字幕保持到该时间点（秒）；期间禁止新字幕覆盖
   double subtitle_hold_until_sec_{0.0};
   std::string last_wrong_object_name_;
+  bool wrong_object_hold_active_{false};
 
   std::string getDirectionHint(
     double av_x, double av_y,
@@ -222,6 +216,7 @@ private:
     last_direction_hint_sec_ = 0.0;
     subtitle_hold_until_sec_ = 0.0;
     last_wrong_object_name_.clear();
+    wrong_object_hold_active_ = false;
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -709,11 +704,16 @@ private:
       if (now_sec < subtitle_hold_until_sec_) {
         return;
       }
-      // 保持窗口结束：重置计时起点，确保下一条周期字幕按完整间隔触发
+      // 保持窗口结束：立即允许下一条周期提示触发
       subtitle_hold_until_sec_ = 0.0;
-      last_direction_hint_sec_ = now_sec;
+      last_direction_hint_sec_ = now_sec - direction_hint_interval_sec_;
     }
     const bool interval_elapsed = (now_sec - last_direction_hint_sec_) >= direction_hint_interval_sec_;
+
+    // 抓错物体且未放下时：锁定错误提示，不允许周期提示覆盖
+    if (step == GuideForTakingObject && wrong_object_hold_active_) {
+      return;
+    }
 
     if (step == GuideForTakingObject && interval_elapsed)
     {
@@ -788,6 +788,8 @@ private:
     if (speechState == SpeechState::Speakable)
     {
       sendGuidanceMessage(pubGuidanceMsgLocal, message, DISPLAY_TYPE_ALL);
+      // 非周期提示（通过 speakGuidanceMessage 发送）触发后重置周期计时器
+      last_direction_hint_sec_ = 0.0;
       speechState = SpeechState::None;
       return true;
     }
@@ -854,28 +856,9 @@ public:
       "/hsrb/omni_base_controller/command",
       10);
 
-    nodeHandle->declare_parameter("use_llm_rewrite", false);
-    nodeHandle->declare_parameter("llm_timeout_sec", 2.0);
-    nodeHandle->declare_parameter("llm_service_name", "/rewrite_guidance");
-    nodeHandle->declare_parameter("strict_template_mode", true);
-    nodeHandle->declare_parameter("direction_hint_interval_sec", 7.0);
-    use_llm_rewrite_ = nodeHandle->get_parameter("use_llm_rewrite").as_bool();
-    llm_timeout_sec_ = nodeHandle->get_parameter("llm_timeout_sec").as_double();
-    llm_service_name_ = nodeHandle->get_parameter("llm_service_name").as_string();
-    strict_template_mode_ = nodeHandle->get_parameter("strict_template_mode").as_bool();
+    nodeHandle->declare_parameter("direction_hint_interval_sec", 10.0);
     direction_hint_interval_sec_ = nodeHandle->get_parameter("direction_hint_interval_sec").as_double();
-    if (use_llm_rewrite_) {
-      llm_client_ = nodeHandle->create_client<human_nav_llm_ros2::srv::RewriteGuidance>(
-        llm_service_name_);
-      RCLCPP_INFO(
-        nodeHandle->get_logger(),
-        "use_llm_rewrite=true, strict_template_mode=%s, service=%s timeout=%.2fs",
-        strict_template_mode_ ? "true" : "false",
-        llm_service_name_.c_str(),
-        llm_timeout_sec_);
-    } else {
-      RCLCPP_INFO(nodeHandle->get_logger(), "use_llm_rewrite=false (guidance text unchanged except truncation)");
-    }
+    RCLCPP_INFO(nodeHandle->get_logger(), "LLM path removed; deterministic guidance only.");
 
     timePrevSpeechStateConfirmed = nodeHandle->now();
 
@@ -886,16 +869,10 @@ public:
       rclcpp::spin_some(nodeHandle);
 
       if (pending_polish_) {
-        const std::string ctx = buildContextJson();
         const std::string draft_pick  = buildStrictPickTemplate();
         const std::string draft_place = buildStrictPlaceTemplate();
-        if (use_llm_rewrite_ && !strict_template_mode_) {
-          polished_pick_base_  = polishGuidance(draft_pick, "pick", ctx);
-          polished_place_base_ = polishGuidance(draft_place, "place", ctx);
-        } else {
-          polished_pick_base_  = truncateUtf8(draft_pick, 400);
-          polished_place_base_ = truncateUtf8(draft_place, 400);
-        }
+        polished_pick_base_  = truncateUtf8(draft_pick, 400);
+        polished_place_base_ = truncateUtf8(draft_place, 400);
         pending_polish_ = false;
         RCLCPP_INFO(
           nodeHandle->get_logger(),
@@ -944,8 +921,22 @@ public:
             sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
             avatar_timer = nodeHandle->now().seconds();
 
-            if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
-                static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
+            const bool has_target_object =
+              static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
+              static_cast<bool>(avatarStatus.is_target_object_in_right_hand);
+            const bool has_any_object =
+              !avatarStatus.object_in_left_hand.empty() ||
+              !avatarStatus.object_in_right_hand.empty();
+            const bool has_wrong_object = has_any_object && !has_target_object;
+
+            // 用户放下错误物品后，继续保留错误提示4秒再恢复周期提示
+            if (wrong_object_hold_active_ && !has_wrong_object) {
+              wrong_object_hold_active_ = false;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
+              last_direction_hint_sec_ = 0.0;
+            }
+
+            if (has_target_object)
             {
               guideMsg = "Please Keep holding the Object";
               while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
@@ -953,9 +944,9 @@ public:
                 RCLCPP_INFO(nodeHandle->get_logger(), "still waiting");
                 rclcpp::spin_some(nodeHandle);
               }
-              // 该提示保留3秒，期间字幕更新计时器视为0，防止立即被覆盖
+              // 该提示保留4秒，期间字幕更新计时器视为0，防止立即被覆盖
               last_direction_hint_sec_ = 0.0;
-              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 3.0;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
 
               // 抓取正确后立即朝第三阶段目的地方向转向，给受试者即时方向提示
               moveBaseJointTrajectory(
@@ -967,14 +958,15 @@ public:
               step             = GuideForPlacement;
               isRequestReceived = true;
               last_wrong_object_name_.clear();
+              wrong_object_hold_active_ = false;
               break;
             }
-            else if (!avatarStatus.object_in_left_hand.empty() ||
-                     !avatarStatus.object_in_right_hand.empty())
+            else if (has_wrong_object)
             {
               const std::string wrong_object = !avatarStatus.object_in_left_hand.empty()
                                              ? avatarStatus.object_in_left_hand
                                              : avatarStatus.object_in_right_hand;
+              wrong_object_hold_active_ = true;
               if (wrong_object != last_wrong_object_name_)
               {
                 guideMsg = "This is not the object, Please try again!";
@@ -983,6 +975,8 @@ public:
                   RCLCPP_INFO(nodeHandle->get_logger(), "still waiting_2");
                   rclcpp::spin_some(nodeHandle);
                 }
+                // 抓错提示保留4秒，避免被后续提示瞬间覆盖
+                subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
                 last_wrong_object_name_ = wrong_object;
               }
               break;
@@ -991,35 +985,10 @@ public:
 
           if (isRequestReceived)
           {
+            // 仅保留周期分支发送 guidance，request 分支不再主动发提示词
             moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
-
-            guideMsg = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
-                                                  : polished_pick_base_;
-
-            if (static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
-                static_cast<bool>(avatarStatus.is_target_object_in_right_hand))
-            {
-              double obj_x  = taskInfo.target_object.position.x;
-              double obj_y  = taskInfo.target_object.position.y;
-              double obj_z  = taskInfo.target_object.position.z;
-              double dest_x = taskInfo.destination.position.x;
-              double dest_y = taskInfo.destination.position.y;
-              double dest_z = taskInfo.destination.position.z;
-
-              double distance = std::sqrt(
-                std::pow(obj_x - dest_x, 2) +
-                std::pow(obj_y - dest_y, 2) +
-                std::pow(obj_z - dest_z, 2));
-
-              (void)distance;  // 原 ROS1 中只是计算并打印标记，这里保持逻辑但不额外输出
-              RCLCPP_INFO(nodeHandle->get_logger(), "Distance obj->dest computed");
-            }
-
-            if (speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
-            {
-              time            = nodeHandle->now();
-              isRequestReceived = false;
-            }
+            time = nodeHandle->now();
+            isRequestReceived = false;
           }
           break;
         }
@@ -1796,168 +1765,9 @@ std::string HumanNavigationSample::buildContextJson() const
 std::string HumanNavigationSample::polishGuidance(
   const std::string & draft, const std::string & phase, const std::string & context_json)
 {
-  if (draft.empty()) {
-    return draft;
-  }
-  if (!use_llm_rewrite_ || !llm_client_) {
-    return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
-  }
-  if (!llm_client_->wait_for_service(std::chrono::milliseconds(500))) {
-    RCLCPP_WARN(
-      nodeHandle->get_logger(),
-      "LLM service not available within 500ms, using draft");
-    return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
-  }
-
-  auto request = std::make_shared<human_nav_llm_ros2::srv::RewriteGuidance::Request>();
-  request->draft = draft;
-  request->phase = phase;
-  request->context_json = context_json.empty() ? "{}" : context_json;
-
-  auto future = llm_client_->async_send_request(request);
-  const std::chrono::duration<double> timeout(llm_timeout_sec_);
-  const auto ret = rclcpp::spin_until_future_complete(nodeHandle, future, timeout);
-  if (ret != rclcpp::FutureReturnCode::SUCCESS) {
-    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite future failed or timed out, using draft");
-    return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
-  }
-
-  const human_nav_llm_ros2::srv::RewriteGuidance::Response::SharedPtr response = future.get();
-  if (!response || !response->success || response->rewritten.empty()) {
-    RCLCPP_WARN(nodeHandle->get_logger(), "LLM rewrite returned failure or empty, using draft");
-    return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
-  }
-
-  const std::string rewritten = truncateUtf8(normalizeKnownFusionPhrase(response->rewritten), 400);
-
-  // D: output guardrail. If rewritten text does not match the expected stage pattern, fallback to draft.
-  auto toLower = [](std::string s) {
-      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-      });
-      return s;
-    };
-  const std::string low = toLower(rewritten);
-  const std::string phase_low = toLower(phase);
-
-  auto trimAscii = [](std::string s) {
-      size_t b = 0;
-      while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) {
-        ++b;
-      }
-      size_t e = s.size();
-      while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) {
-        --e;
-      }
-      return s.substr(b, e - b);
-    };
-  auto extractJsonString = [](const std::string & json, const std::string & key) {
-      const std::string needle = "\"" + key + "\":\"";
-      const size_t p = json.find(needle);
-      if (p == std::string::npos) {
-        return std::string();
-      }
-      size_t i = p + needle.size();
-      std::string out;
-      bool escaped = false;
-      while (i < json.size()) {
-        const char ch = json[i++];
-        if (escaped) {
-          out.push_back(ch);
-          escaped = false;
-          continue;
-        }
-        if (ch == '\\') {
-          escaped = true;
-          continue;
-        }
-        if (ch == '"') {
-          break;
-        }
-        out.push_back(ch);
-      }
-      return out;
-    };
-  auto normalizeSlot = [&](std::string s) {
-      s = trimAscii(toLower(s));
-      if (s.rfind("the ", 0) == 0) {
-        s = trimAscii(s.substr(4));
-      }
-      return s;
-    };
-
-  std::string slot_on;
-  std::string slot_near;
-  if (phase_low == "pick") {
-    slot_on = normalizeSlot(extractJsonString(context_json, "pick_on"));
-    slot_near = normalizeSlot(extractJsonString(context_json, "pick_near"));
-  } else if (phase_low == "place") {
-    slot_on = normalizeSlot(extractJsonString(context_json, "place_on"));
-    slot_near = normalizeSlot(extractJsonString(context_json, "place_near"));
-  }
-
-  bool valid = true;
-  // 仅拦截“两个不同槽位(on/near)被拼接成一个名词短语”的情况
-  // 若场景中本来就存在单物体名（如 "desk lamp"），不应被硬编码拦截。
-  bool fused_by_slots = false;
-  if (!slot_on.empty() && !slot_near.empty() && slot_on != slot_near) {
-    const std::string merge1 = slot_on + " " + slot_near;
-    const std::string merge2 = slot_near + " " + slot_on;
-    fused_by_slots = (low.find(merge1) != std::string::npos) ||
-                     (low.find(merge2) != std::string::npos);
-  }
-  if (fused_by_slots) {
-    valid = false;
-  } else if (phase_low == "pick") {
-    const bool has_prefix = low.find("please grab the") != std::string::npos;
-    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
-    const bool on_slot_ok =
-      slot_on.empty() ||
-      (low.find(" on the " + slot_on) != std::string::npos) ||
-      (low.find(" on " + slot_on) != std::string::npos);
-    const bool has_near = low.find(" near ") != std::string::npos;
-    const bool near_slot_ok =
-      (slot_near.empty() && !has_near) ||
-      (!slot_near.empty() && (
-        (low.find(", near the " + slot_near) != std::string::npos) ||
-        (low.find(", near " + slot_near) != std::string::npos)));
-    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
-                                (low.find(", near ") != std::string::npos);
-    if (valid && !slot_near.empty() && low.find(", near ") == std::string::npos) {
-      valid = false;
-    }
-    valid = valid && has_prefix && has_on && on_slot_ok && near_slot_ok && near_clause_ok;
-  } else if (phase_low == "place") {
-    const bool has_prefix = low.find("please place it") != std::string::npos;
-    const bool has_on = low.find(" on ") != std::string::npos;  // 主位必须 on
-    const bool on_slot_ok =
-      slot_on.empty() ||
-      (low.find(" on the " + slot_on) != std::string::npos) ||
-      (low.find(" on " + slot_on) != std::string::npos);
-    const bool has_near = low.find(" near ") != std::string::npos;
-    const bool near_slot_ok =
-      (slot_near.empty() && !has_near) ||
-      (!slot_near.empty() && (
-        (low.find(", near the " + slot_near) != std::string::npos) ||
-        (low.find(", near " + slot_near) != std::string::npos)));
-    const bool has_pointing = low.find("where the robot points") != std::string::npos;
-    const bool near_clause_ok = (low.find(" near ") == std::string::npos) ||
-                                (low.find(", near ") != std::string::npos);
-    if (valid && !slot_near.empty() && low.find(", near ") == std::string::npos) {
-      valid = false;
-    }
-    valid = valid && has_prefix && has_on && on_slot_ok && near_slot_ok && has_pointing && near_clause_ok;
-  }
-
-  if (!valid) {
-    RCLCPP_WARN(
-      nodeHandle->get_logger(),
-      "LLM rewrite rejected by stage guardrail (phase=%s), using draft",
-      phase.c_str());
-    return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
-  }
-
-  return rewritten;
+  (void)phase;
+  (void)context_json;
+  return truncateUtf8(normalizeKnownFusionPhrase(draft), 400);
 }
 
 int main(int argc, char ** argv)
