@@ -12,6 +12,7 @@ reference/*
 log/*
 build/*
 install/*
+.worktrees/
 
 # pixi 环境
 .pixi/*
