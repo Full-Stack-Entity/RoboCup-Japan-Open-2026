@@ -408,18 +408,8 @@ private:
     {
       return "a cup";
     }
-    // 默认：去掉末尾 _0/_1 等，下划线改空格，前加 "the "
-    std::string s = name;
-    while (s.size() > 0 && std::isdigit(static_cast<unsigned char>(s.back())))
-    {
-      s.pop_back();
-    }
-    if (s.size() > 0 && s.back() == '_')
-    {
-      s.pop_back();
-    }
-    std::replace(s.begin(), s.end(), '_', ' ');
-    return "the " + s;
+    // 默认：统一走 toReadableName，清理 Unity 后缀噪声（如 _C01 / _C_02 / _A）
+    return "the " + toReadableName(name);
   }
 
   // 下方 getFinalDestination/getInitialDestination/getFurnitureRelation 基本照搬 2025 逻辑
@@ -552,8 +542,7 @@ private:
       if (within)
       {
         RCLCPP_INFO(nodeHandle->get_logger(), "Within the furniture");
-        std::string furniture_name = taskInfo.furniture[index_of_nearest_furniture].name;
-        std::replace(furniture_name.begin(), furniture_name.end(), '_', ' ');
+        std::string furniture_name = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
         std::string relation = getFurnitureRelation(
           furniture_name,
@@ -567,8 +556,7 @@ private:
     }
 
     RCLCPP_INFO(nodeHandle->get_logger(), "Not within the furniture");
-    std::string nearest_furniture_name = taskInfo.furniture[index_of_nearest_furniture].name;
-    std::replace(nearest_furniture_name.begin(), nearest_furniture_name.end(), '_', ' ');
+    std::string nearest_furniture_name = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
     return "Place it in/on the " + nearest_furniture_name;
   }
@@ -609,8 +597,7 @@ private:
       }
     }
 
-    std::string nearest_furniture = taskInfo.furniture[index_of_nearest_furniture].name;
-    std::replace(nearest_furniture.begin(), nearest_furniture.end(), '_', ' ');
+    std::string nearest_furniture = toReadableName(taskInfo.furniture[index_of_nearest_furniture].name);
 
     int   index_of_nearest_non = 0;
     float min_distance_non     = 999999999.0f;
@@ -636,11 +623,7 @@ private:
 
     std::string readableTarget = getHumanReadableTargetName(targetObjectName);
     std::string nearest_non_target =
-      (k > 0) ? taskInfo.non_target_objects[index_of_nearest_non].name : "";
-    if (!nearest_non_target.empty())
-    {
-      std::replace(nearest_non_target.begin(), nearest_non_target.end(), '_', ' ');
-    }
+      (k > 0) ? toReadableName(taskInfo.non_target_objects[index_of_nearest_non].name) : "";
 
     if (k > 0 && min_distance_non < 0.4)
     {
@@ -1143,19 +1126,85 @@ std::string HumanNavigationSample::escapeJsonString(const std::string & s)
 std::string HumanNavigationSample::toReadableName(const std::string & name)
 {
   std::string s = name;
-  // Unity 后缀：末尾 _ + 单个大写字母（如 sidetable_A）→ 去掉该段
-  while (s.size() >= 2 && s[s.size() - 2] == '_' &&
-    std::isupper(static_cast<unsigned char>(s.back())))
-  {
-    s.resize(s.size() - 2);
+  // 常见 Unity 后缀，先去掉，避免影响尾部噪声识别（如 C01(Clone)）
+  for (const std::string tag : {std::string("(Clone)"), std::string("(clone)")}) {
+    size_t pos = std::string::npos;
+    while ((pos = s.find(tag)) != std::string::npos) {
+      s.erase(pos, tag.size());
+    }
   }
   std::replace(s.begin(), s.end(), '_', ' ');
-  while (s.size() >= 2 && s[s.size() - 2] == ' ' &&
-    std::isupper(static_cast<unsigned char>(s.back())))
+
+  // 压缩多空格并分词，便于仅清理 Unity 结尾噪声（如 C01 / C 02 / _A）
+  std::vector<std::string> tokens;
   {
-    s.resize(s.size() - 2);
+    std::istringstream iss(s);
+    std::string t;
+    while (iss >> t) {
+      tokens.push_back(t);
+    }
   }
-  return s;
+  auto stripEdgePunct = [](const std::string & t) {
+    size_t b = 0;
+    size_t e = t.size();
+    while (b < e && !std::isalnum(static_cast<unsigned char>(t[b]))) {
+      ++b;
+    }
+    while (e > b && !std::isalnum(static_cast<unsigned char>(t[e - 1]))) {
+      --e;
+    }
+    return (b < e) ? t.substr(b, e - b) : std::string();
+  };
+  auto isSingleLetter = [](const std::string & t) {
+    return t.size() == 1 && std::isalpha(static_cast<unsigned char>(t[0]));
+  };
+  auto isAllDigits = [](const std::string & t) {
+    if (t.empty()) {
+      return false;
+    }
+    for (char ch : t) {
+      if (!std::isdigit(static_cast<unsigned char>(ch))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  auto isLetterDigits = [&](const std::string & t) {
+    if (t.size() < 2 || !std::isalpha(static_cast<unsigned char>(t[0]))) {
+      return false;
+    }
+    return isAllDigits(t.substr(1));
+  };
+
+  bool changed = true;
+  while (changed && !tokens.empty()) {
+    changed = false;
+    const std::string last = stripEdgePunct(tokens.back());
+    if (isSingleLetter(last) || isLetterDigits(last) || isAllDigits(last)) {
+      tokens.pop_back();
+      changed = true;
+      continue;
+    }
+    // 处理 "C 02" / "c 02" 这种两段后缀
+    if (tokens.size() >= 2 &&
+      isAllDigits(stripEdgePunct(tokens.back())) &&
+      isSingleLetter(stripEdgePunct(tokens[tokens.size() - 2])))
+    {
+      tokens.pop_back();
+      tokens.pop_back();
+      changed = true;
+      continue;
+    }
+  }
+
+  std::ostringstream oss;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (i != 0) {
+      oss << ' ';
+    }
+    oss << tokens[i];
+  }
+  return oss.str();
 }
 
 std::string HumanNavigationSample::toLowerAscii(std::string s)
@@ -1618,7 +1667,7 @@ std::string HumanNavigationSample::buildContextJson() const
 
   std::ostringstream oss;
   oss << "{\"environment_id\":\"" << escapeJsonString(taskInfo.environment_id) << "\""
-      << ",\"target_prefab\":\"" << escapeJsonString(taskInfo.target_object.name) << "\""
+      << ",\"target_prefab\":\"" << escapeJsonString(toReadableName(taskInfo.target_object.name)) << "\""
       << ",\"pick_on\":\"" << escapeJsonString(pick_on) << "\""
       << ",\"pick_near\":\"" << escapeJsonString(pick_near) << "\""
       << ",\"place_on\":\"" << escapeJsonString(place_on) << "\""
