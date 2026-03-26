@@ -25,6 +25,7 @@
 
 #include <iostream>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include <thread>
 #include <algorithm>
@@ -1554,19 +1555,16 @@ public:
         }
         case GoToRoom1:
         {
-          if(found_object){
-            if(nav_goal_sent_) {
-              RCLCPP_INFO(node_->get_logger(), "Object detected! Cancelling navigation to approach target.");
-              if(nav_goal_handle_) {
-                nav_action_client_->async_cancel_goal(nav_goal_handle_);
-              }
-              stopBase(pub_base_twist);
-            }
+          if(found_object && room_reached){
+            RCLCPP_INFO(node_->get_logger(), "Object detected in target room! Stopping all navigation.");
 
-            if(!room_reached){
-              RCLCPP_INFO(node_->get_logger(), "Room Reached (object found during navigation)");
-              sendMessage(pub_msg, MSG_ROOM_REACHED);
-              room_reached = true;
+            nav_action_client_->async_cancel_all_goals();
+
+            auto cancel_start = node_->now();
+            while(rclcpp::ok() && (node_->now() - cancel_start).seconds() < 1.0) {
+              stopBase(pub_base_twist);
+              rclcpp::spin_some(node_);
+              std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
 
             ready_to_grasp = false;
@@ -1577,12 +1575,55 @@ public:
             y_adjust = 0.0;
             body_height = 0.0;
             nav_goal_sent_ = false;
+            nav_goal_active_ = false;
+            nav_goal_reached_ = false;
+            nav_goal_failed_ = false;
             step_ = MoveToInFrontOfTarget;
             RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
             break;
           }
 
+          if(!room_reached && !nav_goal_sent_) {
+            try {
+              auto tf_stamped = tf_buffer.lookupTransform("map", "base_footprint",
+                  tf2::TimePointZero, tf2::durationFromSec(2.0));
+              double robot_x = tf_stamped.transform.translation.x;
+              double robot_y = tf_stamped.transform.translation.y;
+
+              auto first_pose = roomLocation(room_list[0], 0);
+              bool in_room = false;
+              for(int v = 0; v < max_patrol; v++) {
+                auto room_pose = (v == 0) ? first_pose : roomLocation(room_list[0], v);
+                double dx = robot_x - room_pose.pose.position.x;
+                double dy = robot_y - room_pose.pose.position.y;
+                double dist = std::sqrt(dx*dx + dy*dy);
+                if(dist < 3.5) {
+                  in_room = true;
+                  RCLCPP_INFO(node_->get_logger(),
+                    "Robot at (%.2f, %.2f) is %.2fm from patrol point %d in '%s'",
+                    robot_x, robot_y, dist, v, room_list[0].c_str());
+                  break;
+                }
+              }
+
+              if(in_room) {
+                RCLCPP_INFO(node_->get_logger(),
+                  "Already in target room '%s', skipping navigation, starting search",
+                  room_list[0].c_str());
+                sendMessage(pub_msg, MSG_ROOM_REACHED);
+                room_reached = true;
+              } else {
+                RCLCPP_INFO(node_->get_logger(),
+                  "Robot at (%.2f, %.2f) is NOT in target room '%s', navigating via Nav2...",
+                  robot_x, robot_y, room_list[0].c_str());
+              }
+            } catch (const tf2::TransformException &ex) {
+              RCLCPP_WARN(node_->get_logger(), "Could not check room proximity: %s", ex.what());
+            }
+          }
+
           if (!nav_goal_sent_) {
+            found_object = false;
             auto goal_pose = roomLocation(room_list[0],patrol_step);
             RCLCPP_INFO(node_->get_logger(), "Assigned goal for room: %s, x: %.3f, y: %.3f", room_list[0].c_str(), goal_pose.pose.position.x, goal_pose.pose.position.y);
             goal_pose.header.frame_id = "map";
@@ -1684,6 +1725,15 @@ public:
         }
         case MoveToInFrontOfTarget:
         {
+          if(nav_goal_active_.load() || nav_goal_sent_) {
+            RCLCPP_WARN(node_->get_logger(), "Stale navigation detected in MoveToInFrontOfTarget, cancelling...");
+            nav_action_client_->async_cancel_all_goals();
+            stopBase(pub_base_twist);
+            nav_goal_active_ = false;
+            nav_goal_sent_ = false;
+            break;
+          }
+
           if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)){
 
             if(x_det < 240 - 25*tol_multiplier){
@@ -1733,7 +1783,7 @@ public:
           } else {
             aligned_x = false;
             aligned_y = false;
-            moveBase(pub_base_twist, 0.0, 0.0, 0.15);
+            moveBase(pub_base_twist, 0.0, 0.0, 0.3);
             RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
               "Object lost from view, rotating to search...");
           }
