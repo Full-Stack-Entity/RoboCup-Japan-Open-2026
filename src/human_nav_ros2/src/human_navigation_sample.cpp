@@ -1205,37 +1205,69 @@ std::string HumanNavigationSample::getRelationPhraseForPosition(
   if (taskInfo.furniture.empty()) {
     return "";
   }
-  int idx = 0;
-  float best = 999999999.0f;
-  for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
-    const auto & f = taskInfo.furniture[i];
-    float d = static_cast<float>(std::sqrt(
-      std::pow(dx - f.position.x, 2) +
-      std::pow(dy - f.position.y, 2) +
-      std::pow(dz - f.position.z, 2)));
-    if (d < best) {
-      best = d;
-      idx = static_cast<int>(i);
+  // 简化版 on 判定：
+  // 1) 仅考虑在目标点下方的家具（支撑物 Z 小于物体 Z，即 fz < dz）；
+  // 2) 在下方候选中按水平距离 dxy 最近选支撑物；
+  // 3) 若无下方候选，再回退最近家具作为 near 参照。
+  std::string best_relation_below;
+  double best_below_dxy = 1e12;
+  double best_below_dz = 1e12;
+  std::string nearest_name;
+  double nearest_dist = 1e12;
+
+  for (const auto & f : taskInfo.furniture) {
+    const double fx = f.position.x;
+    const double fy = f.position.y;
+    const double fz = f.position.z;
+    const double dxy = std::sqrt(std::pow(dx - fx, 2) + std::pow(dy - fy, 2));
+    const double d3 = std::sqrt(std::pow(dx - fx, 2) + std::pow(dy - fy, 2) + std::pow(dz - fz, 2));
+    if (d3 < nearest_dist) {
+      nearest_dist = d3;
+      nearest_name = toReadableName(f.name);
+    }
+
+    const std::string name = toReadableName(f.name);
+    // 场景中“在物体下方”=> 家具 Z 小于物体 Z
+    const double dz_rel = dz - fz;
+    if (dz_rel <= 0.0) {
+      continue;
+    }
+
+    // 语句生成沿用现有接口，减少外部行为波动
+    const double fx_min = fx - std::abs(size_x) / 2.0;
+    const double fx_max = fx + std::abs(size_x) / 2.0;
+    const double fy_min = fy - std::abs(size_y) / 2.0;
+    const double fy_max = fy + std::abs(size_y) / 2.0;
+    const double fz_min = fz - std::abs(size_z);
+    const double fz_max = fz + std::abs(size_z);
+    const std::string relation = getFurnitureRelation(
+      name, dx, dy, dz,
+      fx_min, fx_max, fy_min, fy_max, fz_min, fz_max);
+    const std::string rel_low = toLowerAscii(relation);
+    const bool support =
+      rel_low.rfind("on the ", 0) == 0 ||
+      rel_low.rfind("in the ", 0) == 0 ||
+      rel_low.rfind("inside the ", 0) == 0;
+    if (!support) {
+      continue;
+    }
+
+    if (dxy < best_below_dxy ||
+      (std::abs(dxy - best_below_dxy) < 1e-6 && dz_rel < best_below_dz))
+    {
+      best_below_dxy = dxy;
+      best_below_dz = dz_rel;
+      best_relation_below = relation;
     }
   }
-  const auto & fn = taskInfo.furniture[idx];
-  double fx = fn.position.x, fy = fn.position.y, fz = fn.position.z;
-  double fx_min = fx - std::abs(size_x) / 2.0;
-  double fx_max = fx + std::abs(size_x) / 2.0;
-  double fy_min = fy - std::abs(size_y) / 2.0;
-  double fy_max = fy + std::abs(size_y) / 2.0;
-  double fz_min = fz - std::abs(size_z);
-  double fz_max = fz + std::abs(size_z);
 
-  const std::string furniture_name = toReadableName(fn.name);
-
-  bool within = (dx <= fx_max && dx >= fx_min && dy <= fy_max && dy >= fy_min);
-  if (within) {
-    return getFurnitureRelation(
-      furniture_name, dx, dy, dz,
-      fx_min, fx_max, fy_min, fy_max, fz_min, fz_max);
+  if (!best_relation_below.empty()) {
+    return best_relation_below;
   }
-  return "near the " + furniture_name;
+  if (!nearest_name.empty()) {
+    return "near the " + nearest_name;
+  }
+  return "";
 }
 
 std::string HumanNavigationSample::nearestFurnitureName(double x, double y, double z) const
@@ -1282,25 +1314,40 @@ std::string HumanNavigationSample::buildPickOnSlotPhrase(
   std::string best_any;
   double best_within_d = 1e12;
   double best_any_d = 1e12;
+  double best_within_dz = 1e12;
+  double best_any_dz = 1e12;
 
   for (size_t i = 0; i < taskInfo.furniture.size(); ++i) {
     const auto & f = taskInfo.furniture[i];
     const std::string readable = toReadableName(f.name);
     const std::string cand = "the " + readable;
     const std::string cand_lower = toLowerAscii(cand);
-    if (!isLargeLandmarkName(toLowerAscii(readable)) || banned_lower.count(cand_lower) > 0) {
+    if (banned_lower.count(cand_lower) > 0) {
       continue;
     }
-    const double d = std::sqrt(
+    // 支撑物在“下方” => furniture.z < object.z
+    const double dz_rel = pz - f.position.z;
+    if (dz_rel <= 0.0) {
+      continue;
+    }
+    const double d3 = std::sqrt(
       std::pow(px - f.position.x, 2) +
       std::pow(py - f.position.y, 2) +
       std::pow(pz - f.position.z, 2));
-    if (d <= 2.0 && d < best_within_d) {
-      best_within_d = d;
+    const double dxy = std::sqrt(
+      std::pow(px - f.position.x, 2) +
+      std::pow(py - f.position.y, 2));
+    // on 搜索初始规则：0-1.5m 内、且在下方的不可交互物品
+    if (d3 <= 1.5 &&
+      (dxy < best_within_d || (std::abs(dxy - best_within_d) < 1e-6 && dz_rel < best_within_dz)))
+    {
+      best_within_d = dxy;
+      best_within_dz = dz_rel;
       best_within = cand;
     }
-    if (d < best_any_d) {
-      best_any_d = d;
+    if (dxy < best_any_d || (std::abs(dxy - best_any_d) < 1e-6 && dz_rel < best_any_dz)) {
+      best_any_d = dxy;
+      best_any_dz = dz_rel;
       best_any = cand;
     }
   }
