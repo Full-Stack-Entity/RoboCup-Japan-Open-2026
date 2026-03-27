@@ -31,10 +31,42 @@ install/*
 .cursor/*
 .claude/*
 
-# training目录中的训练数据和模型权重都不保存，但保存文件夹结构
-training/**
-!training/**/
-!training/**/.gitkeep
+# training 目录：保留脚本、测试、配置和文档；忽略数据、权重与训练结果
+!training/README.md
+!training/DATA_COLLECTION.md
+!training/classes.txt
+!training/dataset.yaml
+!training/scripts/
+!training/scripts/**
+!training/tests/
+!training/tests/**
+
+# training 原始数据与划分数据
+training/data/raw/**
+!training/data/raw/**/
+!training/data/raw/**/.gitkeep
+!training/data/raw/README.md
+training/data/images/**
+!training/data/images/**/
+!training/data/images/**/.gitkeep
+training/data/labels/**
+!training/data/labels/**/
+!training/data/labels/**/.gitkeep
+
+# training 训练输出、导出产物和本地权重
+training/runs/**
+!training/runs/**/
+!training/runs/**/.gitkeep
+training/exports/**
+!training/exports/**/
+!training/exports/**/.gitkeep
+training/weights/**
+!training/weights/**/
+!training/weights/**/.gitkeep
+
+# training Python 缓存
+training/scripts/__pycache__/
+training/tests/__pycache__/
 
 #b本地输出日志
 log.txt

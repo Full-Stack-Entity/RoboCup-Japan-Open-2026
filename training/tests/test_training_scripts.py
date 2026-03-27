@@ -141,10 +141,125 @@ class TrainScriptTests(unittest.TestCase):
                     '--name', 'demo',
                 ])
 
-            self.assertEqual('yolo26n.pt', FakeYOLO.last_model)
+            self.assertEqual('yolo26n.pt', Path(FakeYOLO.last_model).name)
             self.assertEqual(str(data_path.resolve()), FakeYOLO.last_kwargs['data'])
             self.assertEqual(str(project_dir.resolve()), FakeYOLO.last_kwargs['project'])
             self.assertEqual('demo', FakeYOLO.last_kwargs['name'])
+
+
+class ExportXAnyLabelingTests(unittest.TestCase):
+    def test_export_script_generates_xanylabeling_model_dir_from_run_name(self):
+        class FakeYOLO:
+            last_model = None
+            last_export_kwargs = None
+
+            def __init__(self, model_spec):
+                FakeYOLO.last_model = model_spec
+
+            def export(self, **kwargs):
+                FakeYOLO.last_export_kwargs = kwargs
+                export_path = Path(kwargs['project']) / kwargs['name'] / 'weights.onnx'
+                export_path.parent.mkdir(parents=True, exist_ok=True)
+                export_path.write_bytes(b'onnx')
+                return str(export_path)
+
+        fake_ultralytics = types.SimpleNamespace(YOLO=FakeYOLO)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runs_root = root / 'runs'
+            weights_path = runs_root / 'simple-20' / 'weights' / 'best.pt'
+            classes_path = root / 'classes.txt'
+            output_dir = root / 'exports' / 'simple-20'
+
+            weights_path.parent.mkdir(parents=True)
+            weights_path.write_bytes(b'pt')
+            classes_path.write_text('apple\nspray_bottle\nsugar\n', encoding='utf-8')
+
+            export_module = load_module(
+                'export_xanylabeling',
+                Path('scripts/export_xanylabeling.py'),
+                injected_modules={'ultralytics': fake_ultralytics},
+            )
+
+            with mock.patch.dict(sys.modules, {'ultralytics': fake_ultralytics}, clear=False):
+                export_module.main([
+                    '--run-name', 'simple-20',
+                    '--runs-root', str(runs_root),
+                    '--classes-file', str(classes_path),
+                    '--output-dir', str(output_dir),
+                    '--display-name', 'simple-20 auto labeler',
+                    '--conf-threshold', '0.35',
+                    '--iou-threshold', '0.60',
+                    '--imgsz', '640',
+                ])
+
+            config_path = output_dir / 'config.yaml'
+            model_path = output_dir / 'model.onnx'
+
+            self.assertEqual(str(weights_path.resolve()), FakeYOLO.last_model)
+            self.assertEqual('onnx', FakeYOLO.last_export_kwargs['format'])
+            self.assertEqual(640, FakeYOLO.last_export_kwargs['imgsz'])
+            self.assertTrue(model_path.is_file())
+            self.assertTrue(config_path.is_file())
+
+            config_text = config_path.read_text(encoding='utf-8')
+            self.assertIn('type: yolo26\n', config_text)
+            self.assertIn('name: simple-20-xanylabeling\n', config_text)
+            self.assertIn('display_name: simple-20 auto labeler\n', config_text)
+            self.assertIn('model_path: model.onnx\n', config_text)
+            self.assertIn('iou_threshold: 0.6\n', config_text)
+            self.assertIn('conf_threshold: 0.35\n', config_text)
+            self.assertIn('max_det: 300\n', config_text)
+            self.assertIn('  - apple\n', config_text)
+            self.assertIn('  - spray_bottle\n', config_text)
+            self.assertIn('  - sugar\n', config_text)
+
+    def test_export_script_accepts_direct_weights_path(self):
+        class FakeYOLO:
+            last_model = None
+
+            def __init__(self, model_spec):
+                FakeYOLO.last_model = model_spec
+
+            def export(self, **kwargs):
+                export_path = Path(kwargs['project']) / kwargs['name'] / 'raw.onnx'
+                export_path.parent.mkdir(parents=True, exist_ok=True)
+                export_path.write_bytes(b'onnx')
+                return str(export_path)
+
+        fake_ultralytics = types.SimpleNamespace(YOLO=FakeYOLO)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            weights_path = root / 'runs' / 'simple-20' / 'weights' / 'best.pt'
+            classes_path = root / 'classes.txt'
+            output_dir = root / 'model_dir'
+
+            weights_path.parent.mkdir(parents=True)
+            weights_path.write_bytes(b'pt')
+            classes_path.write_text('apple\n', encoding='utf-8')
+
+            export_module = load_module(
+                'export_xanylabeling_direct',
+                Path('scripts/export_xanylabeling.py'),
+                injected_modules={'ultralytics': fake_ultralytics},
+            )
+
+            with mock.patch.dict(sys.modules, {'ultralytics': fake_ultralytics}, clear=False):
+                export_module.main([
+                    '--weights', str(weights_path),
+                    '--classes-file', str(classes_path),
+                    '--output-dir', str(output_dir),
+                ])
+
+            self.assertEqual(str(weights_path.resolve()), FakeYOLO.last_model)
+            self.assertTrue((output_dir / 'config.yaml').is_file())
+            self.assertTrue((output_dir / 'model.onnx').is_file())
+            self.assertIn(
+                'name: simple-20-xanylabeling\n',
+                (output_dir / 'config.yaml').read_text(encoding='utf-8'),
+            )
 
 
 class ExtractFramesTests(unittest.TestCase):
