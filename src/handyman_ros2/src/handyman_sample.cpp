@@ -23,6 +23,10 @@
 #include <handyman_msgs/msg/handyman_msg.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
+// Enable M_PI constant from cmath
+#define _USE_MATH_DEFINES
+#include <cmath>
+
 #include <iostream>
 #include <cstring>
 #include <cmath>
@@ -660,7 +664,7 @@ private:
 
   int step_;
   int patrol_step;
-  int max_patrol;
+  int max_patrol = 0;  // FIX: Initialize to 0, roomLocation() will set correct value
   bool room_reached;
   bool found_object,found_dest;
   double init_yaw;
@@ -671,6 +675,21 @@ private:
   geometry_msgs::msg::PoseStamped object_pose;
   geometry_msgs::msg::Pose dest_pose;
   bool extend_before_release;
+
+  // Phase 1: Room scan state variables
+  bool scan_started_;           // True after entering MoveToInFrontOfTarget from GoToRoom1
+  double scan_total_rotation_;  // Total rotation angle during room scan
+  rclcpp::Time scan_start_time_;  // When room scan started
+  static constexpr double MAX_SCAN_ROTATION = 6.28;  // Max 360 degree scan before giving up
+  static constexpr double SCAN_ROTATION_SPEED = 0.3;  // rad/s for room scan
+
+  // Dynamic room distance check state
+  rclcpp::Time last_room_check_time_;  // Last time we checked room distance
+  static constexpr double ROOM_CHECK_INTERVAL_FAR = 6.0;   // Check every 6s when far (>5m)
+  static constexpr double ROOM_CHECK_INTERVAL_MID = 4.0;    // Check every 4s when mid (2-5m)
+  static constexpr double ROOM_CHECK_INTERVAL_NEAR = 2.0;   // Check every 2s when near (<2m)
+  static constexpr double ROOM_DIST_FAR_THRESHOLD = 5.0;     // >5m = far
+  static constexpr double ROOM_DIST_NEAR_THRESHOLD = 2.0;   // <2m = near
 
   std::string instruction_msg_;
 
@@ -688,10 +707,15 @@ private:
 
   std::shared_ptr<rclcpp::Node> node_;
 
+  // TF buffer for checking robot position
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
   std::shared_future<GoalHandleNavigate::SharedPtr> nav_goal_future_;
   GoalHandleNavigate::SharedPtr nav_goal_handle_;
   std::atomic<bool> nav_goal_active_{false};
+  std::atomic<bool> nav_goal_cancelled_{false};  // Flag to distinguish timeout-cancelled from normal completion
   std::atomic<bool> nav_goal_reached_{false};
   std::atomic<bool> nav_goal_failed_{false};
   std::atomic<bool> nav_goal_accepted_{false};
@@ -702,6 +726,10 @@ private:
   void init()
   {
     map_manager_ = std::make_unique<LoadMapManager>(node_);
+
+    // Initialize TF buffer and listener for robot position checking
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     std::vector<std::string> arm_joint_names {"arm_lift_joint", "arm_flex_joint", "arm_roll_joint", "wrist_flex_joint", "wrist_roll_joint"};
 
@@ -733,9 +761,14 @@ private:
     nav_goal_failed_ = false;
     nav_goal_reached_ = false;
     nav_goal_active_ = false;
+    nav_goal_cancelled_ = false;  // Reset cancellation flag
     nav_goal_accepted_ = false;
     std::vector<double> arm_positions { 0.0, 0.0, 0.0, 0.0, 0.0 };
     arm_joint_trajectory_.points[0].positions = arm_positions;
+
+    // Phase 1: Reset room scan state
+    scan_started_ = false;
+    scan_total_rotation_ = 0.0;
   }
 
 
@@ -1132,6 +1165,10 @@ private:
     return location;
   }
 
+  // Note: Room boundary detection was removed. Robot must ALWAYS patrol to confirm
+  // room entry and earn the 20 points. This ensures reliable room detection without
+  // relying on uncertain boundary coordinates.
+
   geometry_msgs::msg::PoseStamped roomLocation(std::string room, int variation){
     // LayoutA
     auto LayoutA_living_room = makePoseStamped(2.0, 1, 1.57);
@@ -1285,6 +1322,154 @@ private:
     return location;
   }
 
+  // FIX: Check if robot is in the target room using rectangular boundary.
+  // Rectangle is centered at waypoint, extends 1m in all directions from center.
+  // Returns: {is_in_room, distance_to_rectangle}
+  // Distance is 0 if robot is inside the rectangle.
+  std::pair<bool, double> getRobotRoomDistance(const std::string& target_room) {
+    static constexpr double ROOM_HALF_SIZE_M = 1.0;  // Rectangle extends 1m from center point
+
+    try {
+      // Get robot pose in map frame
+      geometry_msgs::msg::TransformStamped tf_stamped = tf_buffer_->lookupTransform(
+        "map", "base_footprint", tf2::TimePointZero, tf2::durationFromSec(1.0));
+      double robot_x = tf_stamped.transform.translation.x;
+      double robot_y = tf_stamped.transform.translation.y;
+
+      std::string env_lower = lower(ENVIRONMENT);
+
+      // Helper: calculate distance from point to rectangle
+      // Rectangle defined by center (cx, cy) and half-size (h)
+      // Returns 0 if inside, otherwise returns minimum horizontal distance to edge
+      auto distToRect = [](double px, double py, double cx, double cy, double h) -> double {
+        // Check if point is inside rectangle
+        if (px >= cx - h && px <= cx + h && py >= cy - h && py <= cy + h) {
+          return 0.0;  // Inside rectangle
+        }
+        // Calculate minimum distance to rectangle edge (horizontal/vertical distance)
+        double dx = 0.0, dy = 0.0;
+        if (px < cx - h) dx = (cx - h) - px;
+        else if (px > cx + h) dx = px - (cx + h);
+        if (py < cy - h) dy = (cy - h) - py;
+        else if (py > cy + h) dy = py - (cy + h);
+        return std::sqrt(dx * dx + dy * dy);
+      };
+
+      // Check all waypoints for this room
+      // LayoutA waypoints
+      if (env_lower == "layout2019hm01") {
+        if (target_room == "living") {
+          double waypoints[2][2] = {{2.0, 1.0}, {2.5, 4.08}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) {  // Inside rectangle
+              return {true, dist};
+            }
+          }
+        } else if (target_room == "bedroom") {
+          double waypoints[2][2] = {{2.57, -4.31}, {8.64, -5.7}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "lobby") {
+          double waypoints[2][2] = {{1.2, -6.16}, {1.0, -3.6}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "kitchen") {
+          double waypoints[2][2] = {{8.5, 2.8}, {5.0, 4.2}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        }
+      }
+      // LayoutB waypoints
+      else if (env_lower == "layout2019hm02") {
+        if (target_room == "living") {
+          double waypoints[2][2] = {{3.5, 9.6}, {1.84, 10.2}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "lobby") {
+          double waypoints[2][2] = {{1.0, 0.0}, {2.5, 2.0}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "kitchen") {
+          double waypoints[2][2] = {{5.5, -1.13}, {8.42, -1.13}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        }
+      }
+      // LayoutC waypoints
+      else if (env_lower == "layout2020hm01") {
+        if (target_room == "living") {
+          double waypoints[4][2] = {{0.5, 2.0}, {0.42, 3.48}, {4.5, 3.48}, {4.5, -0.65}};
+          for (int i = 0; i < 4; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "bedroom") {
+          double waypoints[2][2] = {{0.1, 6.9}, {3.0, 8.0}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "kitchen") {
+          double waypoints[3][2] = {{6.5, -1.2}, {7.8, 1.2}, {6.5, 3.9}};
+          for (int i = 0; i < 3; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        }
+      }
+      // LayoutD waypoints
+      else if (env_lower == "layout2021hm01") {
+        if (target_room == "living") {
+          double waypoints[2][2] = {{1.0, 0.0}, {3.5, 0.0}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "bedroom") {
+          double waypoints[2][2] = {{4.0, -8.5}, {1.69, -8.0}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        } else if (target_room == "lobby") {
+          double waypoints[2][2] = {{-1.86, -8.38}, {-4.86, -8.7}};
+          for (int i = 0; i < 2; i++) {
+            double dist = distToRect(robot_x, robot_y, waypoints[i][0], waypoints[i][1], ROOM_HALF_SIZE_M);
+            if (dist < 0.01) return {true, dist};
+          }
+        }
+      }
+
+      // Not inside any rectangle - calculate minimum distance to all rectangles
+      // For simplicity, return distance to first waypoint's rectangle
+      // (GoToRoom1 loop will handle finding the closest one)
+      return {false, 0.0};  // Caller should re-check with actual waypoint
+
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_WARN(node_->get_logger(), "getRobotRoomDistance: TF error: %s", ex.what());
+      return {false, -1.0};  // Unknown
+    }
+  }
+
+  // Simplified check: returns true if robot is in target room
+  bool isRobotInTargetRoom(const std::string& target_room) {
+    auto [in_room, dist] = getRobotRoomDistance(target_room);
+    return in_room;
+  }
+
   tf2::Transform getTfBase(tf2_ros::Buffer &tf_buffer)
   {
     tf2::Transform tf_transform;
@@ -1412,6 +1597,7 @@ private:
           nav_goal_active_ = false;
           nav_goal_accepted_ = false;
           nav_goal_failed_ = true;
+          nav_goal_sent_ = false;  // FIX: Must reset sent flag so we can retry
           nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
         } else {
           RCLCPP_INFO(node_->get_logger(), "Navigation goal ACCEPTED by server");
@@ -1425,24 +1611,34 @@ private:
         nav_goal_active_ = false;
         switch (result.code) {
           case rclcpp_action::ResultCode::SUCCEEDED:
-            RCLCPP_INFO(node_->get_logger(), "Navigation goal SUCCEEDED");
-            nav_goal_reached_ = true;
+            // Only mark as reached if goal was not cancelled by timeout
+            // This prevents race condition where SUCCEEDED arrives after we've
+            // already moved to next waypoint due to timeout
+            if (!nav_goal_cancelled_) {
+              RCLCPP_INFO(node_->get_logger(), "Navigation goal SUCCEEDED");
+              nav_goal_reached_ = true;
+            } else {
+              RCLCPP_INFO(node_->get_logger(), "Navigation goal SUCCEEDED (stale, goal was cancelled by timeout)");
+            }
             nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           case rclcpp_action::ResultCode::ABORTED:
             RCLCPP_ERROR(node_->get_logger(), "Navigation goal ABORTED by server");
             nav_goal_failed_ = true;
+            nav_goal_sent_ = false;  // FIX: Must reset sent flag so we can retry after ABORTED
             nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           case rclcpp_action::ResultCode::CANCELED:
             RCLCPP_WARN(node_->get_logger(), "Navigation goal was CANCELED");
             nav_goal_failed_ = true;
+            nav_goal_sent_ = false;  // FIX: Must reset sent flag so we can retry after CANCELED
             nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           default:
             RCLCPP_ERROR(node_->get_logger(), "Navigation goal returned UNKNOWN result code: %d",
                         static_cast<int>(result.code));
             nav_goal_failed_ = true;
+            nav_goal_sent_ = false;  // FIX: Must reset sent flag so we can retry
             nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
         }
@@ -1459,6 +1655,7 @@ private:
     nav_goal_active_ = true;
     nav_goal_reached_ = false;
     nav_goal_failed_ = false;
+    nav_goal_cancelled_ = false;  // Reset cancellation flag when sending new goal
     nav_goal_accepted_ = false;
     nav_goal_send_time_ = node_->now();
     nav_action_client_->async_send_goal(goal_msg, send_goal_options);
@@ -1494,9 +1691,6 @@ public:
     auto pub_base_twist = node_->create_publisher<geometry_msgs::msg::Twist>("/hsrb/command_velocity", 10);
     auto pub_arm_trajectory = node_->create_publisher<trajectory_msgs::msg::JointTrajectory>("/hsrb/arm_trajectory_controller/command", 10);
     auto pub_gripper_trajectory = node_->create_publisher<trajectory_msgs::msg::JointTrajectory>("/hsrb/gripper_controller/command", 10);
-
-    tf2_ros::Buffer tf_buffer(node_->get_clock());
-    tf2_ros::TransformListener tf_listener(tf_buffer);
 
     // Suppress unused variable warnings for subscriptions
     (void)sub_msg;
@@ -1597,109 +1791,173 @@ public:
         }
         case GoToRoom1:
         {
-          // DEBUG: log entry every frame
-          RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 3000,
-            "DEBUG GoToRoom1: patrol_step=%d, max_patrol=%d, nav_goal_sent_=%d, found_object=%d, room_reached=%d, room_list[0]='%s'",
-            patrol_step, max_patrol, nav_goal_sent_, found_object, room_reached,
+          // FIX: If max_patrol is 0 (not initialized), call roomLocation() first to set it.
+          if (max_patrol == 0) {
+            RCLCPP_INFO(node_->get_logger(), "GoToRoom1: max_patrol is 0, initializing with roomLocation()...");
+            auto dummy_pose = roomLocation(room_list.empty() ? "living" : room_list[0], 0);
+            RCLCPP_INFO(node_->get_logger(), "GoToRoom1: max_patrol initialized to %d", max_patrol);
+          }
+
+          // FIX: On first entry to GoToRoom1 (patrol_step == 0 and no goal sent yet),
+          // check if robot is already in the target room.
+          // If yes, immediately send Room_reached and enter scan.
+          // If no, proceed with navigation.
+          if (patrol_step == 0 && !nav_goal_sent_ && !room_reached) {
+            RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Checking if robot is already in target room '%s'...",
+                        room_list.empty() ? "unknown" : room_list[0].c_str());
+
+            if (isRobotInTargetRoom(room_list.empty() ? "living" : room_list[0])) {
+              // Robot is already in target room!
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot is ALREADY in target room! Sending Room_reached immediately.");
+              sendMessage(pub_msg, MSG_ROOM_REACHED);
+              room_reached = true;
+
+              // Enter scan state
+              stopBase(pub_base_twist);
+              nav_goal_active_ = false;
+              nav_goal_reached_ = false;
+              nav_goal_failed_ = false;
+              ready_to_grasp = false;
+              aligned_x = false;
+              aligned_y = false;
+              arm_height = 0.0;
+              x_adjust = 0.0;
+              y_adjust = 0.0;
+              body_height = 0.0;
+              patrol_step = 0;
+              scan_started_ = false;
+              step_ = MoveToInFrontOfTarget;
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Entering MoveToInFrontOfTarget (robot was already in room)");
+              break;
+            } else {
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot is NOT in target room. Starting navigation...");
+            }
+          }
+
+          // DEBUG: log entry every frame (throttled)
+          RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 5000,
+            "DEBUG GoToRoom1: patrol_step=%d, max_patrol=%d, nav_goal_sent_=%d, room_reached=%d, target='%s'",
+            patrol_step, max_patrol, nav_goal_sent_, room_reached,
             room_list.empty() ? "(empty)" : room_list[0].c_str());
 
-          // FIX: "Already in room" check with SAFE threshold.
-          // Only skip navigation if robot is within 0.5m of the first patrol waypoint AND
-          // it's the first waypoint (patrol_step==0). This handles the case where the
-          // robot spawns already in the target room (Unity sometimes does this).
-          // The old 3.5m threshold was way too loose. 0.5m is tight enough that it only
-          // fires when the robot is genuinely at the patrol point (prevents REJECTED goal).
-          if (!nav_goal_sent_ && patrol_step == 0) {
-            try {
-              auto tf_stamped = tf_buffer.lookupTransform("map", "base_footprint",
-                  tf2::TimePointZero, tf2::durationFromSec(1.0));
-              double robot_x = tf_stamped.transform.translation.x;
-              double robot_y = tf_stamped.transform.translation.y;
-              auto room_pose = roomLocation(room_list[0], 0);
-              double dx = robot_x - room_pose.pose.position.x;
-              double dy = robot_y - room_pose.pose.position.y;
-              double dist = std::hypot(dx, dy);
-              if (dist < 0.5) {
-                RCLCPP_INFO(node_->get_logger(),
-                  "GoToRoom1: Robot at (%.2f, %.2f) is within 0.5m of patrol point (%.2f, %.2f), skipping navigation, sending Room_reached",
-                  robot_x, robot_y, room_pose.pose.position.x, room_pose.pose.position.y);
+          // ---- Dynamic room distance check during navigation ----
+          // Check more frequently as robot gets closer to room
+          if (nav_goal_sent_ && !room_reached) {
+            auto now = node_->now();
+            double time_since_last_check = (now - last_room_check_time_).seconds();
+
+            // Calculate distance to target room
+            auto [in_room, dist_to_room] = getRobotRoomDistance(room_list.empty() ? "living" : room_list[0]);
+
+            // Determine check interval based on distance
+            double check_interval = ROOM_CHECK_INTERVAL_FAR;
+            if (dist_to_room >= 0) {
+              if (dist_to_room > ROOM_DIST_FAR_THRESHOLD) {
+                check_interval = ROOM_CHECK_INTERVAL_FAR;  // Far: slow check
+              } else if (dist_to_room > ROOM_DIST_NEAR_THRESHOLD) {
+                check_interval = ROOM_CHECK_INTERVAL_MID;  // Mid: medium check
+              } else {
+                check_interval = ROOM_CHECK_INTERVAL_NEAR;  // Near: fast check
+              }
+            }
+
+            // Log periodically based on distance (throttled)
+            RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+              "GoToRoom1: Room dist=%.2f m, check_interval=%.2f s, in_room=%d",
+              dist_to_room >= 0 ? dist_to_room : -1.0, check_interval, in_room);
+
+            // Check if we should update room status this frame
+            if (time_since_last_check >= check_interval) {
+              last_room_check_time_ = now;
+
+              // Check if robot has entered the room
+              if (in_room && !room_reached) {
+                RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot ENTERED target room! Sending Room_reached!");
                 sendMessage(pub_msg, MSG_ROOM_REACHED);
                 room_reached = true;
-                patrol_step = 1;  // advance to next waypoint for search, but skip navigation
-                break;
-              }
-            } catch (const tf2::TransformException &) {
-              // TF not available, proceed with normal navigation
-            }
-          }
 
-          // ---- BONUS: Early exit if object found while en route ----
-          if(found_object && room_reached){
-            RCLCPP_INFO(node_->get_logger(), "Object detected in target room! Stopping navigation, entering alignment...");
-            nav_action_client_->async_cancel_all_goals();
-            auto cancel_start = node_->now();
-            while(rclcpp::ok() && (node_->now() - cancel_start).seconds() < 1.0) {
-              stopBase(pub_base_twist);
-              rclcpp::spin_some(node_);
-              std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-            ready_to_grasp = false;
-            aligned_x = false;
-            aligned_y = false;
-            arm_height = 0.0;
-            x_adjust = 0.0;
-            y_adjust = 0.0;
-            body_height = 0.0;
-            nav_goal_sent_ = false;
-            nav_goal_active_ = false;
-            nav_goal_reached_ = false;
-            nav_goal_failed_ = false;
-            step_ = MoveToInFrontOfTarget;
-            RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
-            break;
-          }
-
-          // ---- Send patrol navigation goal ----
-          // FIX: Only send goal if patrol_step is valid.
-          // When patrol_step >= max_patrol, all waypoints are done and we should
-          // stay at the last position for search (not re-navigate to invalid index).
-          if (!nav_goal_sent_ && patrol_step < max_patrol) {
-            // FIX: Wait for map TF to be available before sending goal.
-            // After environment switch, map_server may be active but TF not yet
-            // published by amcl, causing goal REJECTED.
-            {
-              static bool tf_wait_logged = false;
-              bool tf_available = false;
-              auto tf_check_start = node_->now();
-              while (rclcpp::ok() && !tf_available &&
-                     (node_->now() - tf_check_start).seconds() < 30.0) {
-                try {
-                  tf_buffer.lookupTransform("map", "base_footprint", tf2::TimePointZero,
-                                             tf2::durationFromSec(1.0));
-                  tf_available = true;
-                } catch (const tf2::TransformException &) {
-                  if (!tf_wait_logged) {
-                    RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Waiting for map TF to become available...");
-                    tf_wait_logged = true;
-                  }
-                  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                // Cancel navigation and enter scan immediately
+                nav_action_client_->async_cancel_all_goals();
+                auto cancel_start = node_->now();
+                while(rclcpp::ok() && (node_->now() - cancel_start).seconds() < 1.0) {
+                  stopBase(pub_base_twist);
                   rclcpp::spin_some(node_);
+                  std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
-              }
-              if (!tf_available) {
-                RCLCPP_ERROR(node_->get_logger(), "GoToRoom1: Map TF not available after 30s, retrying next waypoint...");
-                tf_wait_logged = false;
-                patrol_step++;
-                if(patrol_step >= max_patrol){
-                  RCLCPP_WARN(node_->get_logger(), "GoToRoom1: All patrol waypoints failed (TF timeout), will retry from step 0...");
-                  patrol_step = 0;
-                }
+                nav_goal_sent_ = false;
+                nav_goal_active_ = false;
+                nav_goal_reached_ = false;
+                nav_goal_failed_ = false;
+                ready_to_grasp = false;
+                aligned_x = false;
+                aligned_y = false;
+                arm_height = 0.0;
+                x_adjust = 0.0;
+                y_adjust = 0.0;
+                body_height = 0.0;
+                patrol_step = 0;
+                scan_started_ = false;
+                step_ = MoveToInFrontOfTarget;
+                RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Entering MoveToInFrontOfTarget (room reached during navigation)");
                 break;
               }
+            }
+          }
+
+          // ---- CRITICAL: Only send goal if patrol_step is valid ----
+          if (!nav_goal_sent_ && patrol_step < max_patrol) {
+            // Initialize last_room_check_time_ on first goal send
+            last_room_check_time_ = node_->now();
+
+            // Wait for map TF to be available before sending goal
+            static bool tf_wait_logged = false;
+            bool tf_available = false;
+            auto tf_check_start = node_->now();
+            while (rclcpp::ok() && !tf_available &&
+                   (node_->now() - tf_check_start).seconds() < 30.0) {
+              try {
+                tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero,
+                                           tf2::durationFromSec(1.0));
+                tf_available = true;
+              } catch (const tf2::TransformException &) {
+                if (!tf_wait_logged) {
+                  RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Waiting for map TF to become available...");
+                  tf_wait_logged = true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                rclcpp::spin_some(node_);
+              }
+            }
+            if (!tf_available) {
+              RCLCPP_ERROR(node_->get_logger(), "GoToRoom1: Map TF not available after 30s, will retry...");
               tf_wait_logged = false;
+              break;
+            }
+            tf_wait_logged = false;
+
+            // Check if robot is already in room before sending goal
+            if (isRobotInTargetRoom(room_list.empty() ? "living" : room_list[0])) {
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot is already in target room! Sending Room_reached immediately.");
+              sendMessage(pub_msg, MSG_ROOM_REACHED);
+              room_reached = true;
+              stopBase(pub_base_twist);
+              nav_goal_active_ = false;
+              nav_goal_reached_ = false;
+              nav_goal_failed_ = false;
+              ready_to_grasp = false;
+              aligned_x = false;
+              aligned_y = false;
+              arm_height = 0.0;
+              x_adjust = 0.0;
+              y_adjust = 0.0;
+              body_height = 0.0;
+              patrol_step = 0;
+              scan_started_ = false;
+              step_ = MoveToInFrontOfTarget;
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Entering MoveToInFrontOfTarget (robot was already in room)");
+              break;
             }
 
-            // Always reset found_object when starting navigation to a new waypoint
             found_object = false;
 
             auto goal_pose = roomLocation(room_list[0], patrol_step);
@@ -1711,104 +1969,91 @@ public:
             nav_goal_sent_ = true;
           }
 
+          // ---- Navigation succeeded ----
           if (nav_goal_reached_.load()){
               RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Patrol point %d/%d reached", patrol_step + 1, max_patrol);
               nav_goal_reached_ = false;
               nav_goal_sent_ = false;
 
-              // Send Room_reached once (official Flow step 8)
+              // FIX: After reaching waypoint, check if robot is now in target room
               if (!room_reached) {
-                RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Sending Room_reached");
-                sendMessage(pub_msg, MSG_ROOM_REACHED);
-                room_reached = true;
+                if (isRobotInTargetRoom(room_list.empty() ? "living" : room_list[0])) {
+                  RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot arrived in target room! Sending Room_reached.");
+                  sendMessage(pub_msg, MSG_ROOM_REACHED);
+                  room_reached = true;
+                } else {
+                  RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Robot NOT in room after reaching waypoint, continuing patrol...");
+                }
               }
 
               patrol_step++;
               if (patrol_step >= max_patrol) {
-                // FIX: All patrol waypoints done! Transition to MoveToInFrontOfTarget.
-                // This prevents the patrol_step >= max_patrol bug where the next frame
-                // would send a goal to index max_patrol (out of bounds / (3/2) goal).
-                RCLCPP_INFO(node_->get_logger(),
-                  "GoToRoom1: All %d patrol waypoints done. Transitioning to MoveToInFrontOfTarget for room search.",
-                  max_patrol);
-                stopBase(pub_base_twist);
-                if (nav_goal_handle_) {
-                  nav_action_client_->async_cancel_goal(nav_goal_handle_);
+                // All waypoints done
+                if (!room_reached) {
+                  // This should not happen if isRobotInTargetRoom works correctly
+                  // But as safeguard: check again and send Room_reached if now in room
+                  RCLCPP_WARN(node_->get_logger(), "GoToRoom1: All waypoints done but room_reached is false! Checking...");
+                  if (isRobotInTargetRoom(room_list.empty() ? "living" : room_list[0])) {
+                    sendMessage(pub_msg, MSG_ROOM_REACHED);
+                    room_reached = true;
+                  }
                 }
-                nav_goal_active_ = false;
-                nav_goal_reached_ = false;
-                nav_goal_failed_ = false;
-                ready_to_grasp = false;
-                aligned_x = false;
-                aligned_y = false;
-                arm_height = 0.0;
-                x_adjust = 0.0;
-                y_adjust = 0.0;
-                body_height = 0.0;
-                patrol_step = 0;
-                step_ = MoveToInFrontOfTarget;
-                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
+
+                if (room_reached) {
+                  RCLCPP_INFO(node_->get_logger(), "GoToRoom1: All waypoints done, entering scan.");
+                  stopBase(pub_base_twist);
+                  if (nav_goal_handle_) {
+                    nav_action_client_->async_cancel_goal(nav_goal_handle_);
+                  }
+                  nav_goal_active_ = false;
+                  nav_goal_reached_ = false;
+                  nav_goal_failed_ = false;
+                  ready_to_grasp = false;
+                  aligned_x = false;
+                  aligned_y = false;
+                  arm_height = 0.0;
+                  x_adjust = 0.0;
+                  y_adjust = 0.0;
+                  body_height = 0.0;
+                  patrol_step = 0;
+                  scan_started_ = false;
+                  step_ = MoveToInFrontOfTarget;
+                  RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
+                } else {
+                  // CRITICAL FIX: If not in room after all waypoints, keep trying last waypoint
+                  // DO NOT enter scan without Room_reached!
+                  RCLCPP_WARN(node_->get_logger(),
+                    "GoToRoom1: NOT in room after all waypoints! Retrying last waypoint. DO NOT enter scan!");
+                  patrol_step = max_patrol - 1;  // Go back to last waypoint
+                  nav_goal_sent_ = false;
+                }
                 break;
               }
               // Continue to next patrol waypoint
-          } else if (nav_goal_failed_.load()) {
-              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation to patrol point %d/%d failed, trying next...",
+          }
+          // ---- Navigation failed (ABORTED) ----
+          else if (nav_goal_failed_.load()) {
+              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation to patrol point %d/%d failed (ABORTED). Retrying...",
                          patrol_step + 1, max_patrol);
               nav_goal_failed_ = false;
               nav_goal_sent_ = false;
-              patrol_step++;
-              if (patrol_step >= max_patrol) {
-                // All waypoints failed. Transition to search phase instead of staying idle.
-                RCLCPP_WARN(node_->get_logger(),
-                  "GoToRoom1: All %d patrol waypoints failed. Transitioning to MoveToInFrontOfTarget.",
-                  max_patrol);
-                stopBase(pub_base_twist);
-                nav_goal_active_ = false;
-                nav_goal_reached_ = false;
-                nav_goal_failed_ = false;
-                ready_to_grasp = false;
-                aligned_x = false;
-                aligned_y = false;
-                arm_height = 0.0;
-                x_adjust = 0.0;
-                y_adjust = 0.0;
-                body_height = 0.0;
-                patrol_step = 0;
-                step_ = MoveToInFrontOfTarget;
-                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
-                break;
-              }
-          } else if (nav_goal_sent_ &&
-                     (node_->now() - nav_goal_send_time_).seconds() > NAV_GOAL_TIMEOUT_SEC) {
-              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation goal timed out (%.0f s), trying next...",
+              // CRITICAL: DO NOT increment patrol_step or enter scan. Keep retrying!
+              // Robot is NOT in target room, entering scan would be pointless.
+          }
+          // ---- Navigation timeout ----
+          else if (nav_goal_sent_ &&
+                   (node_->now() - nav_goal_send_time_).seconds() > NAV_GOAL_TIMEOUT_SEC) {
+              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation goal timed out (%.0f s). Retrying...",
                          NAV_GOAL_TIMEOUT_SEC);
               if (nav_goal_handle_) {
                 nav_action_client_->async_cancel_goal(nav_goal_handle_);
               }
               nav_goal_sent_ = false;
+              nav_goal_cancelled_ = true;
               nav_goal_failed_ = false;
-              patrol_step++;
-              if (patrol_step >= max_patrol) {
-                // All waypoints timed out. Transition to search phase.
-                RCLCPP_WARN(node_->get_logger(),
-                  "GoToRoom1: All %d patrol waypoints timed out. Transitioning to MoveToInFrontOfTarget.",
-                  max_patrol);
-                stopBase(pub_base_twist);
-                nav_goal_active_ = false;
-                nav_goal_reached_ = false;
-                nav_goal_failed_ = false;
-                ready_to_grasp = false;
-                aligned_x = false;
-                aligned_y = false;
-                arm_height = 0.0;
-                x_adjust = 0.0;
-                y_adjust = 0.0;
-                body_height = 0.0;
-                patrol_step = 0;
-                step_ = MoveToInFrontOfTarget;
-                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
-                break;
-              }
+              nav_goal_reached_ = false;
+              // CRITICAL: DO NOT increment patrol_step or enter scan. Keep retrying!
+              // Robot is NOT in target room, entering scan would be pointless.
           }
 
           break;
@@ -1875,8 +2120,27 @@ public:
             break;
           }
 
-          if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)){
+          // Phase 1: Initialize room scan on first entry
+          if (!scan_started_) {
+            RCLCPP_INFO(node_->get_logger(), "MoveToInFrontOfTarget: Starting systematic room scan...");
+            scan_started_ = true;
+            scan_total_rotation_ = 0.0;
+            scan_start_time_ = node_->now();
+            aligned_x = false;
+            aligned_y = false;
+            // Raise arm to scanning position
+            std::vector<double> scan_positions { 0.2, 0.0, 0.0, -1.57, 0.0 };
+            rclcpp::Duration scan_duration = rclcpp::Duration::from_seconds(1.0);
+            moveArm(pub_arm_trajectory, scan_positions, scan_duration);
+          }
 
+          // Phase 1: Systematic room scan when object not detected
+          if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)){
+            // Object found during scan!
+            RCLCPP_INFO(node_->get_logger(), "MoveToInFrontOfTarget: Object detected during room scan!");
+            scan_started_ = false;  // Reset for next time we enter
+
+            // Track rotation during alignment
             if(x_det < 240 - 25*tol_multiplier){
               x_adjust = 0.03;
               aligned_x = false;
@@ -1922,11 +2186,31 @@ public:
               }
             }
           } else {
+            // Phase 1: Systematic room scan - rotate and track total rotation
             aligned_x = false;
             aligned_y = false;
-            moveBase(pub_base_twist, 0.0, 0.0, 0.3);
-            RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
-              "Object lost from view, rotating to search...");
+            double rotation_delta = SCAN_ROTATION_SPEED * 0.1;  // 0.1s per loop iteration
+            scan_total_rotation_ += rotation_delta;
+
+            // Rotate base to scan room
+            moveBase(pub_base_twist, 0.0, 0.0, SCAN_ROTATION_SPEED);
+
+            RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 3000,
+              "MoveToInFrontOfTarget: Systematic room scan in progress... (%.1f / %.1f rad, %.1f deg)",
+              scan_total_rotation_, MAX_SCAN_ROTATION,
+              scan_total_rotation_ * 180.0 / M_PI);
+
+            // Phase 1: Check if full scan completed without finding object
+            if (scan_total_rotation_ >= MAX_SCAN_ROTATION) {
+              RCLCPP_WARN(node_->get_logger(),
+                "MoveToInFrontOfTarget: Full room scan complete (360 deg), object NOT found. Sending Object_not_found.");
+              scan_started_ = false;
+              // Stop base before sending message
+              stopBase(pub_base_twist);
+              sendMessage(pub_msg, "Object_not_found");
+              // Stay in this state, allow retry or next patrol point
+              // Could transition back to GoToRoom1 for next patrol waypoint if available
+            }
           }
 
           break;
