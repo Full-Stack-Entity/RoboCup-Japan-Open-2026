@@ -22,7 +22,6 @@
 
 #include <handyman_msgs/msg/handyman_msg.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
-#include <handyman_ros2/room_navigation.hpp>
 
 #include <iostream>
 #include <cstring>
@@ -68,6 +67,10 @@ private:
     std::mutex map_mutex_;
     std::condition_variable map_cv_;
 
+    // TF management - persistent buffer and listener for proper TF availability checking
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
 public:
     LoadMapManager(std::shared_ptr<rclcpp::Node> node) :
         node_(node), current_environment_("None"), move_base_active_(false), navigation_cancelled_(false),
@@ -85,6 +88,11 @@ public:
                 latest_map_msg_ = msg;
                 map_cv_.notify_all();
             });
+
+        // Initialize persistent TF buffer and listener
+        // tf2_ros::Buffer requires Clock parameter, use unique_ptr for dynamic allocation
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         registerDefaultEnvironments();
     }
@@ -153,6 +161,13 @@ public:
         if (!gracefulStopNavigation()) {
             RCLCPP_ERROR(node_->get_logger(), "Failed to gracefully stop navigation");
             return false;
+        }
+
+        // Clear TF buffer to prevent extrapolation errors from stale transforms
+        // Old map TF timestamps can conflict with new map after environment switch
+        if (tf_buffer_) {
+            tf_buffer_->clear();
+            RCLCPP_INFO(node_->get_logger(), "Cleared TF buffer after navigation stop");
         }
 
         std::string map_file = environment_to_map_[mapped_env];
@@ -379,7 +394,7 @@ private:
         try {
             auto initial_pose_pub = node_->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose", 1);
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
             geometry_msgs::msg::PoseWithCovarianceStamped initial_pose_msg;
             initial_pose_msg.header.stamp = node_->now();
@@ -387,18 +402,22 @@ private:
             initial_pose_msg.pose.pose = initial_pose;
 
             initial_pose_msg.pose.covariance = {
-                0.05, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.05, 0.0, 0.0, 0.0, 0.0,
+                0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.01
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.1
             };
 
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 5; i++) {
                 initial_pose_pub->publish(initial_pose_msg);
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
+
+            // Wait for AMCL to publish stable TF after receiving initial pose
+            RCLCPP_INFO(node_->get_logger(), "Waiting for AMCL to publish stable TF...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
             RCLCPP_INFO(node_->get_logger(), "Initial pose published successfully");
             return true;
@@ -530,7 +549,7 @@ private:
         RCLCPP_INFO(node_->get_logger(), "Waiting for navigation system to be ready...");
 
         auto start_time = node_->now();
-        double timeout = 20.0;
+        double timeout = 30.0;  // Increased from 20s to allow more time for TF and Nav2 to stabilize
 
         while (rclcpp::ok()) {
             bool all_ready = true;
@@ -563,31 +582,37 @@ private:
     }
 
     bool checkTFReady() {
-        try {
-            tf2_ros::Buffer tf_buffer(node_->get_clock());
-            tf2_ros::TransformListener tf_listener(tf_buffer);
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-            if (tf_buffer.canTransform("map", "base_footprint", tf2::TimePointZero, tf2::durationFromSec(1.0))) {
-                RCLCPP_DEBUG(node_->get_logger(), "TF transform map->base_footprint is available");
-                return true;
-            }
-
-            if (tf_buffer.canTransform("odom", "base_footprint", tf2::TimePointZero, tf2::durationFromSec(1.0))) {
-                RCLCPP_DEBUG(node_->get_logger(), "TF transform odom->base_footprint is available (fallback)");
-                return true;
-            }
-
-            return false;
-
-        } catch (const tf2::TransformException& ex) {
-            RCLCPP_DEBUG(node_->get_logger(), "TF transform exception: %s", ex.what());
-            return false;
-        } catch (const std::exception& ex) {
-            RCLCPP_DEBUG(node_->get_logger(), "TF check exception: %s", ex.what());
+        if (!tf_buffer_) {
+            RCLCPP_ERROR(node_->get_logger(), "TF buffer not initialized");
             return false;
         }
+        
+        const int max_retries = 3;
+        for (int retry = 0; retry < max_retries; retry++) {
+            try {
+                // Wait for TF buffer to fill (TF listener needs time to receive messages)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+                // Use persistent member variable tf_buffer_ instead of creating new one
+                if (tf_buffer_->canTransform("map", "base_footprint", tf2::TimePointZero, tf2::durationFromSec(2.0))) {
+                    RCLCPP_DEBUG(node_->get_logger(), "TF transform map->base_footprint is available");
+                    return true;
+                }
+
+                if (tf_buffer_->canTransform("odom", "base_footprint", tf2::TimePointZero, tf2::durationFromSec(2.0))) {
+                    RCLCPP_DEBUG(node_->get_logger(), "TF transform odom->base_footprint is available (fallback)");
+                    return true;
+                }
+
+                if (retry < max_retries - 1) {
+                    RCLCPP_WARN(node_->get_logger(), "TF not ready, retry %d/%d...", retry + 1, max_retries);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                }
+            } catch (const std::exception& ex) {
+                RCLCPP_DEBUG(node_->get_logger(), "TF check exception: %s", ex.what());
+            }
+        }
+        return false;
     }
 };
 
@@ -653,11 +678,8 @@ private:
   bool is_finished_;
   bool is_failed_;
   rclcpp::Time last_detect_;
-  rclcpp::Time waiting_start_time;
-  rclcpp::Time scan_start_time_;  // for MoveToInFrontOfTarget initial scanning phase
   double tol_multiplier;
   double x_adjust,y_adjust;
-  bool is_scanning_;  // true when in initial scan-rotate phase of MoveToInFrontOfTarget
 
   std::vector<std::string> object_list,room_list,dest_list;
 
@@ -676,7 +698,6 @@ private:
   bool nav_goal_sent_{false};
   rclcpp::Time nav_goal_send_time_;
   static constexpr double NAV_GOAL_TIMEOUT_SEC = 60.0;
-  static constexpr double SCAN_TIMEOUT_SEC = 15.0;  // max time to rotate-search in MoveToInFrontOfTarget
 
   void init()
   {
@@ -692,16 +713,13 @@ private:
     step_ = Initialize;
 
     reset();
-    is_scanning_ = false;
-    scan_start_time_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
     last_are_you_ready_time_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
   }
 
   void reset()
   {
     instruction_msg_ = "";
-    // NOTE: do NOT reset ENVIRONMENT here - it is managed explicitly in Initialize case
-    // and must survive Are_you_ready? interrupts
+    ENVIRONMENT = "None";
     is_started_  = false;
     is_finished_ = false;
     is_failed_   = false;
@@ -710,6 +728,7 @@ private:
     object_list.clear();
     room_list.clear();
     dest_list.clear();
+    patrol_step = 0;  // FIX: must reset patrol_step between tasks to avoid stuck navigation
     nav_goal_sent_ = false;
     nav_goal_failed_ = false;
     nav_goal_reached_ = false;
@@ -748,14 +767,11 @@ private:
   {
     RCLCPP_INFO(node_->get_logger(), "Subscribe message:%s, %s", message->message.c_str(), message->detail.c_str());
 
-    // MSG_ENVIRONMENT must be processed first and exclusively - never fall through to other handlers
     if(message->message.c_str()==MSG_ENVIRONMENT)
     {
       ENVIRONMENT = mapUnityEnvironmentName(message->detail);
-      RCLCPP_INFO(node_->get_logger(), "######The environment is %s", ENVIRONMENT.c_str());
-      return;  // <-- FIX: environment assignment must not fall through to Are_you_ready? handler
+      return;  // environment assignment must not fall through to Are_you_ready? handler
     }
-
     RCLCPP_INFO(node_->get_logger(), "######The environment is %s", ENVIRONMENT.c_str());
     if(ENVIRONMENT != "None"){
       if(message->message.c_str()==MSG_ARE_YOU_READY)
@@ -1117,17 +1133,156 @@ private:
   }
 
   geometry_msgs::msg::PoseStamped roomLocation(std::string room, int variation){
-    const auto patrol_waypoints = handyman_ros2::roomPatrolWaypoints(ENVIRONMENT, room);
-    if (patrol_waypoints.empty()) {
-      max_patrol = 1;
-      RCLCPP_WARN(node_->get_logger(), "No patrol waypoint found for room '%s' in environment '%s'", room.c_str(), ENVIRONMENT.c_str());
-      return makePoseStamped(0.5, 2.0, 1.57);
+    // LayoutA
+    auto LayoutA_living_room = makePoseStamped(2.0, 1, 1.57);
+    auto LayoutA_living_room_2 = makePoseStamped(2.5, 4.08, 3.14);
+    auto LayoutA_bedroom = makePoseStamped(2.57, -4.31, 0);
+    auto LayoutA_bedroom2 = makePoseStamped(8.64, -5.7, 0);
+    auto LayoutA_lobby2 = makePoseStamped(1.0, -3.6, 0);
+    auto LayoutA_lobby = makePoseStamped(1.2, -6.16, -1.57);
+    auto LayoutA_kitchen = makePoseStamped(8.5, 2.8, 3.14);
+    auto LayoutA_kitchen2 = makePoseStamped(5.0, 4.2, -0.7);
+    (void)LayoutA_kitchen2;
+
+    // LayoutB
+    auto LayoutB_living_room = makePoseStamped(3.5, 9.6, 2.4);
+    auto LayoutB_living_room2 = makePoseStamped(1.84, 10.2, 0);
+    auto LayoutB_lobby = makePoseStamped(1.0, 0, 0);
+    auto LayoutB_lobby2 = makePoseStamped(2.5, 2.0, 0);
+    auto LayoutB_kitchen = makePoseStamped(5.5, -1.13, 0);
+    auto LayoutB_kitchen2 = makePoseStamped(8.42, -1.13, 0);
+
+    // LayoutC
+    auto LayoutC_living_room = makePoseStamped(0.5, 2.0, 1.57);
+    auto LayoutC_living_room2 = makePoseStamped(0.42, 3.48, 2.355);
+    auto LayoutC_living_room3 = makePoseStamped(4.5, 3.48, 0.0);
+    auto LayoutC_living_room4 = makePoseStamped(4.5, -0.65, 0.0);
+    auto LayoutC_bedroom = makePoseStamped(0.1, 6.9, 0.0);
+    auto LayoutC_bedroom2 = makePoseStamped(3.0, 8.0, 0.0);
+    auto LayoutC_kitchen = makePoseStamped(6.5, -1.2, 0);
+    auto LayoutC_kitchen2 = makePoseStamped(7.8, 1.2, 0);
+    auto LayoutC_kitchen3 = makePoseStamped(6.5, 3.9, 0);
+
+    // LayoutD
+    auto LayoutD_living_room = makePoseStamped(1.0, 0.0, 0);
+    auto LayoutD_living_room_2 = makePoseStamped(3.5, 0.0, 0);
+    auto LayoutD_bedroom = makePoseStamped(4.0, -8.5, 0);
+    auto LayoutD_bedroom2 = makePoseStamped(1.69, -8.0, 0.0);
+    auto LayoutD_lobby = makePoseStamped(-1.86, -8.38, 0.0);
+    auto LayoutD_lobby2 = makePoseStamped(-4.86, -8.7, 0.0);
+
+    geometry_msgs::msg::PoseStamped location;
+    std::string env_lower = lower(ENVIRONMENT);
+    if (env_lower.compare("layout2019hm01") == 0){
+        if(room == "living"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutA_living_room;
+          else if (variation == 1)
+            location = LayoutA_living_room_2;
+          }
+        else if(room == "bedroom"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutA_bedroom;
+          else if (variation == 1)
+            location = LayoutA_bedroom2;
+          }
+        else if(room == "lobby"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutA_lobby;
+          else if (variation == 1)
+            location = LayoutA_lobby2;
+           }
+        else if(room == "kitchen"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutA_kitchen;
+          }
+    }
+    else if (env_lower.compare("layout2019hm02") == 0){
+         if(room == "living"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutB_living_room;
+          else if (variation == 1)
+            location = LayoutB_living_room2;
+            }
+        else if(room == "lobby"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutB_lobby;
+          else if (variation == 1)
+            location = LayoutB_lobby2;
+            }
+        else if(room == "kitchen"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutB_kitchen;
+          else if (variation == 1)
+            location = LayoutB_kitchen2;
+             }
+    }
+    else if (env_lower.compare("layout2020hm01") == 0){
+      if(room == "living"){
+          max_patrol = 4;
+          if(variation == 0)
+            location = LayoutC_living_room;
+          else if (variation == 1)
+            location = LayoutC_living_room2;
+          else if(variation == 2 )
+            location = LayoutC_living_room3;
+          else if (variation == 3)
+            location = LayoutC_living_room4;
+           }
+        else if(room == "bedroom"){
+          max_patrol = 2;
+          if( variation == 0)
+            location = LayoutC_bedroom;
+          else if(variation == 1)
+            location = LayoutC_bedroom2;
+          }
+        else if(room == "kitchen"){
+          max_patrol = 3;
+          if( variation == 0)
+            location = LayoutC_kitchen;
+          else if(variation == 1)
+            location = LayoutC_kitchen2;
+          else if(variation == 2)
+            location = LayoutC_kitchen3;
+          }
+    }
+    else if (env_lower.compare("layout2021hm01") == 0){
+        if(room == "living"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutD_living_room;
+          else if (variation == 1)
+            location = LayoutD_living_room_2;
+        }
+        else if(room == "bedroom"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutD_bedroom;
+          else if (variation == 1)
+            location = LayoutD_bedroom2;
+        }
+        else if(room == "lobby"){
+          max_patrol = 2;
+          if(variation == 0)
+            location = LayoutD_lobby;
+          else if (variation == 1)
+            location = LayoutD_lobby2;
+        }
     }
 
-    max_patrol = static_cast<int>(patrol_waypoints.size());
-    const int waypoint_index = (variation >= 0 && variation < max_patrol) ? variation : 0;
-    const auto &waypoint = patrol_waypoints[waypoint_index];
-    return makePoseStamped(waypoint.x, waypoint.y, waypoint.yaw);
+    else{
+      location = LayoutC_living_room;
+      RCLCPP_INFO(node_->get_logger(), "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$WELP STH UNDESIRABLE HAPPENED");
+    }
+
+    return location;
   }
 
   tf2::Transform getTfBase(tf2_ros::Buffer &tf_buffer)
@@ -1257,6 +1412,7 @@ private:
           nav_goal_active_ = false;
           nav_goal_accepted_ = false;
           nav_goal_failed_ = true;
+          nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
         } else {
           RCLCPP_INFO(node_->get_logger(), "Navigation goal ACCEPTED by server");
           nav_goal_accepted_ = true;
@@ -1271,19 +1427,23 @@ private:
           case rclcpp_action::ResultCode::SUCCEEDED:
             RCLCPP_INFO(node_->get_logger(), "Navigation goal SUCCEEDED");
             nav_goal_reached_ = true;
+            nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           case rclcpp_action::ResultCode::ABORTED:
             RCLCPP_ERROR(node_->get_logger(), "Navigation goal ABORTED by server");
             nav_goal_failed_ = true;
+            nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           case rclcpp_action::ResultCode::CANCELED:
             RCLCPP_WARN(node_->get_logger(), "Navigation goal was CANCELED");
             nav_goal_failed_ = true;
+            nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
           default:
             RCLCPP_ERROR(node_->get_logger(), "Navigation goal returned UNKNOWN result code: %d",
                         static_cast<int>(result.code));
             nav_goal_failed_ = true;
+            nav_goal_handle_.reset();  // FIX: prevent stale handle from causing UnknownGoalHandleError
             break;
         }
       };
@@ -1322,8 +1482,7 @@ public:
     init();
 
     last_detect_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
-    waiting_start_time = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
-    scan_start_time_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
+    rclcpp::Time waiting_start_time(0, 0, node_->get_clock()->get_clock_type());
 
     RCLCPP_INFO(node_->get_logger(), "Handyman sample start!");
 
@@ -1351,6 +1510,11 @@ public:
         RCLCPP_INFO(node_->get_logger(), "Task failed!");
         step_ = Initialize;
       }
+
+      // DEBUG: periodic state heartbeat (every 3 seconds)
+      RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 3000,
+        "DEBUG heartbeat: step=%d, is_failed_=%d, is_started_=%d, ENVIRONMENT='%s'",
+        step_, is_failed_, is_started_, ENVIRONMENT.c_str());
 
       switch(step_)
       {
@@ -1406,6 +1570,10 @@ public:
         }
         case WaitForInstruction:
         {
+          // DEBUG: log entry to diagnose robot not moving
+          RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+            "DEBUG WaitForInstruction: instruction_msg_='%s', step=%d",
+            instruction_msg_.c_str(), step_);
           if(instruction_msg_!="")
           {
             RCLCPP_INFO(node_->get_logger(), "%s", instruction_msg_.c_str());
@@ -1429,20 +1597,76 @@ public:
         }
         case GoToRoom1:
         {
-          // ---- PHASE 1: Send navigation goal to patrol waypoints ----
-          if (!nav_goal_sent_) {
-            // Always reset found_object when starting navigation to a new waypoint
-            found_object = false;
+          // DEBUG: log entry every frame
+          RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 3000,
+            "DEBUG GoToRoom1: patrol_step=%d, max_patrol=%d, nav_goal_sent_=%d, found_object=%d, room_reached=%d, room_list[0]='%s'",
+            patrol_step, max_patrol, nav_goal_sent_, found_object, room_reached,
+            room_list.empty() ? "(empty)" : room_list[0].c_str());
 
-            // NOTE: We always navigate to patrol waypoints for searching, even if the robot
-            // spawns inside the target room. The "already in room" check is skipped because:
-            // 1. The 3.5m threshold is too loose (robot at lobby is ~2.2m from living room waypoint).
-            // 2. Even if already near a waypoint, we still need to visit ALL patrol points to search.
-            // 3. Skipping navigation and relying on found_object creates a deadlock when the hand
-            //    camera is pointing at the floor and no objects are detected.
+          // FIX: "Already in room" check with SAFE threshold.
+          // Only skip navigation if robot is within 0.5m of the first patrol waypoint AND
+          // it's the first waypoint (patrol_step==0). This handles the case where the
+          // robot spawns already in the target room (Unity sometimes does this).
+          // The old 3.5m threshold was way too loose. 0.5m is tight enough that it only
+          // fires when the robot is genuinely at the patrol point (prevents REJECTED goal).
+          if (!nav_goal_sent_ && patrol_step == 0) {
+            try {
+              auto tf_stamped = tf_buffer.lookupTransform("map", "base_footprint",
+                  tf2::TimePointZero, tf2::durationFromSec(1.0));
+              double robot_x = tf_stamped.transform.translation.x;
+              double robot_y = tf_stamped.transform.translation.y;
+              auto room_pose = roomLocation(room_list[0], 0);
+              double dx = robot_x - room_pose.pose.position.x;
+              double dy = robot_y - room_pose.pose.position.y;
+              double dist = std::hypot(dx, dy);
+              if (dist < 0.5) {
+                RCLCPP_INFO(node_->get_logger(),
+                  "GoToRoom1: Robot at (%.2f, %.2f) is within 0.5m of patrol point (%.2f, %.2f), skipping navigation, sending Room_reached",
+                  robot_x, robot_y, room_pose.pose.position.x, room_pose.pose.position.y);
+                sendMessage(pub_msg, MSG_ROOM_REACHED);
+                room_reached = true;
+                patrol_step = 1;  // advance to next waypoint for search, but skip navigation
+                break;
+              }
+            } catch (const tf2::TransformException &) {
+              // TF not available, proceed with normal navigation
+            }
+          }
 
-            // Wait for map TF to become available before sending Nav2 goal
-            // (map_server may not be active immediately after environment switch)
+          // ---- BONUS: Early exit if object found while en route ----
+          if(found_object && room_reached){
+            RCLCPP_INFO(node_->get_logger(), "Object detected in target room! Stopping navigation, entering alignment...");
+            nav_action_client_->async_cancel_all_goals();
+            auto cancel_start = node_->now();
+            while(rclcpp::ok() && (node_->now() - cancel_start).seconds() < 1.0) {
+              stopBase(pub_base_twist);
+              rclcpp::spin_some(node_);
+              std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            ready_to_grasp = false;
+            aligned_x = false;
+            aligned_y = false;
+            arm_height = 0.0;
+            x_adjust = 0.0;
+            y_adjust = 0.0;
+            body_height = 0.0;
+            nav_goal_sent_ = false;
+            nav_goal_active_ = false;
+            nav_goal_reached_ = false;
+            nav_goal_failed_ = false;
+            step_ = MoveToInFrontOfTarget;
+            RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
+            break;
+          }
+
+          // ---- Send patrol navigation goal ----
+          // FIX: Only send goal if patrol_step is valid.
+          // When patrol_step >= max_patrol, all waypoints are done and we should
+          // stay at the last position for search (not re-navigate to invalid index).
+          if (!nav_goal_sent_ && patrol_step < max_patrol) {
+            // FIX: Wait for map TF to be available before sending goal.
+            // After environment switch, map_server may be active but TF not yet
+            // published by amcl, causing goal REJECTED.
             {
               static bool tf_wait_logged = false;
               bool tf_available = false;
@@ -1455,7 +1679,7 @@ public:
                   tf_available = true;
                 } catch (const tf2::TransformException &) {
                   if (!tf_wait_logged) {
-                    RCLCPP_WARN(node_->get_logger(), "Waiting for map TF to become available...");
+                    RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Waiting for map TF to become available...");
                     tf_wait_logged = true;
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -1463,15 +1687,23 @@ public:
                 }
               }
               if (!tf_available) {
-                RCLCPP_ERROR(node_->get_logger(), "Map TF not available after 30s, sending Does_not_exist...");
-                sendMessage(pub_msg, "Does_not_exist");
-                step_ = Initialize;
+                RCLCPP_ERROR(node_->get_logger(), "GoToRoom1: Map TF not available after 30s, retrying next waypoint...");
+                tf_wait_logged = false;
+                patrol_step++;
+                if(patrol_step >= max_patrol){
+                  RCLCPP_WARN(node_->get_logger(), "GoToRoom1: All patrol waypoints failed (TF timeout), will retry from step 0...");
+                  patrol_step = 0;
+                }
                 break;
               }
+              tf_wait_logged = false;
             }
 
+            // Always reset found_object when starting navigation to a new waypoint
+            found_object = false;
+
             auto goal_pose = roomLocation(room_list[0], patrol_step);
-            RCLCPP_INFO(node_->get_logger(), "Patrol step %d/%d: sending goal to (%.2f, %.2f)",
+            RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Sending patrol goal %d/%d to (%.2f, %.2f)",
                        patrol_step + 1, max_patrol, goal_pose.pose.position.x, goal_pose.pose.position.y);
             goal_pose.header.frame_id = "map";
             goal_pose.header.stamp = node_->now();
@@ -1479,75 +1711,76 @@ public:
             nav_goal_sent_ = true;
           }
 
-          // ---- PHASE 2: Navigation progress handling ----
-          if (found_object && room_reached) {
-            // Object detected while navigating or already in room -> enter alignment
-            RCLCPP_INFO(node_->get_logger(), "Object found! Stopping navigation, entering alignment...");
-            nav_action_client_->async_cancel_all_goals();
-            auto cancel_start = node_->now();
-            while(rclcpp::ok() && (node_->now() - cancel_start).seconds() < 1.0) {
-              stopBase(pub_base_twist);
-              rclcpp::spin_some(node_);
-              std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            nav_goal_sent_ = false;
-            nav_goal_active_ = false;
-            nav_goal_reached_ = false;
-            nav_goal_failed_ = false;
-            is_scanning_ = true;
-            scan_start_time_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
-            step_ = MoveToInFrontOfTarget;
-            RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget (scan mode)");
-            break;
-          }
-
-          if (nav_goal_reached_.load()) {
-              RCLCPP_INFO(node_->get_logger(), "Navigation to patrol point %d succeeded", patrol_step + 1);
+          if (nav_goal_reached_.load()){
+              RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Patrol point %d/%d reached", patrol_step + 1, max_patrol);
               nav_goal_reached_ = false;
               nav_goal_sent_ = false;
 
+              // Send Room_reached once (official Flow step 8)
               if (!room_reached) {
-                RCLCPP_INFO(node_->get_logger(), "Room Reached");
+                RCLCPP_INFO(node_->get_logger(), "GoToRoom1: Sending Room_reached");
                 sendMessage(pub_msg, MSG_ROOM_REACHED);
                 room_reached = true;
               }
 
-              // Advance patrol counter; if all done, signal failure (object not found)
               patrol_step++;
               if (patrol_step >= max_patrol) {
-                RCLCPP_WARN(node_->get_logger(),
-                  "All %d patrol waypoints exhausted, object not found. Sending Does_not_exist...",
+                // FIX: All patrol waypoints done! Transition to MoveToInFrontOfTarget.
+                // This prevents the patrol_step >= max_patrol bug where the next frame
+                // would send a goal to index max_patrol (out of bounds / (3/2) goal).
+                RCLCPP_INFO(node_->get_logger(),
+                  "GoToRoom1: All %d patrol waypoints done. Transitioning to MoveToInFrontOfTarget for room search.",
                   max_patrol);
                 stopBase(pub_base_twist);
-                sendMessage(pub_msg, "Does_not_exist");
-                // Reset for next round
-                patrol_step = 0;
-                nav_goal_sent_ = false;
+                if (nav_goal_handle_) {
+                  nav_action_client_->async_cancel_goal(nav_goal_handle_);
+                }
                 nav_goal_active_ = false;
                 nav_goal_reached_ = false;
                 nav_goal_failed_ = false;
-                step_ = Initialize;  // will reset everything
+                ready_to_grasp = false;
+                aligned_x = false;
+                aligned_y = false;
+                arm_height = 0.0;
+                x_adjust = 0.0;
+                y_adjust = 0.0;
+                body_height = 0.0;
+                patrol_step = 0;
+                step_ = MoveToInFrontOfTarget;
+                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
                 break;
               }
-              // Continue to next patrol point in next frame
+              // Continue to next patrol waypoint
           } else if (nav_goal_failed_.load()) {
-              RCLCPP_WARN(node_->get_logger(), "Navigation to patrol point %d failed, trying next...",
-                         patrol_step + 1);
+              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation to patrol point %d/%d failed, trying next...",
+                         patrol_step + 1, max_patrol);
               nav_goal_failed_ = false;
               nav_goal_sent_ = false;
               patrol_step++;
               if (patrol_step >= max_patrol) {
+                // All waypoints failed. Transition to search phase instead of staying idle.
                 RCLCPP_WARN(node_->get_logger(),
-                  "All patrol waypoints failed, object not found. Sending Does_not_exist...");
-                sendMessage(pub_msg, "Does_not_exist");
+                  "GoToRoom1: All %d patrol waypoints failed. Transitioning to MoveToInFrontOfTarget.",
+                  max_patrol);
+                stopBase(pub_base_twist);
+                nav_goal_active_ = false;
+                nav_goal_reached_ = false;
+                nav_goal_failed_ = false;
+                ready_to_grasp = false;
+                aligned_x = false;
+                aligned_y = false;
+                arm_height = 0.0;
+                x_adjust = 0.0;
+                y_adjust = 0.0;
+                body_height = 0.0;
                 patrol_step = 0;
-                step_ = Initialize;
+                step_ = MoveToInFrontOfTarget;
+                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
                 break;
               }
           } else if (nav_goal_sent_ &&
                      (node_->now() - nav_goal_send_time_).seconds() > NAV_GOAL_TIMEOUT_SEC) {
-              RCLCPP_WARN(node_->get_logger(), "Navigation goal timed out (%.0f s), retrying...",
+              RCLCPP_WARN(node_->get_logger(), "GoToRoom1: Navigation goal timed out (%.0f s), trying next...",
                          NAV_GOAL_TIMEOUT_SEC);
               if (nav_goal_handle_) {
                 nav_action_client_->async_cancel_goal(nav_goal_handle_);
@@ -1556,11 +1789,24 @@ public:
               nav_goal_failed_ = false;
               patrol_step++;
               if (patrol_step >= max_patrol) {
+                // All waypoints timed out. Transition to search phase.
                 RCLCPP_WARN(node_->get_logger(),
-                  "All patrol waypoints timed out. Sending Does_not_exist...");
-                sendMessage(pub_msg, "Does_not_exist");
+                  "GoToRoom1: All %d patrol waypoints timed out. Transitioning to MoveToInFrontOfTarget.",
+                  max_patrol);
+                stopBase(pub_base_twist);
+                nav_goal_active_ = false;
+                nav_goal_reached_ = false;
+                nav_goal_failed_ = false;
+                ready_to_grasp = false;
+                aligned_x = false;
+                aligned_y = false;
+                arm_height = 0.0;
+                x_adjust = 0.0;
+                y_adjust = 0.0;
+                body_height = 0.0;
                 patrol_step = 0;
-                step_ = Initialize;
+                step_ = MoveToInFrontOfTarget;
+                RCLCPP_INFO(node_->get_logger(), "Transitioning to MoveToInFrontOfTarget");
                 break;
               }
           }
@@ -1629,49 +1875,6 @@ public:
             break;
           }
 
-          // ---- SCANNING PHASE: rotate to find the object ----
-          if(is_scanning_) {
-            // Start scanning: record start time if this is the first frame of scanning
-            if(scan_start_time_.seconds() == 0) {
-              scan_start_time_ = node_->now();
-              RCLCPP_INFO(node_->get_logger(), "Entering scan phase: rotating to find object...");
-              // Raise arm so hand camera looks at room area, not floor
-              std::vector<double> scan_arm_positions { 0.3, -0.3, 0.0, -1.57, 0.0 };
-              rclcpp::Duration scan_arm_duration = rclcpp::Duration::from_seconds(1.0);
-              moveArm(pub_arm_trajectory, scan_arm_positions, scan_arm_duration);
-            }
-
-            // Check if object is detected
-            if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)) {
-              // Object found during scanning - exit scan mode, start alignment
-              RCLCPP_INFO(node_->get_logger(), "Object found during scan, starting alignment...");
-              is_scanning_ = false;
-              aligned_x = false;
-              aligned_y = false;
-              arm_height = 0.0;
-              x_adjust = 0.0;
-              y_adjust = 0.0;
-              body_height = 0.0;
-              // Fall through to alignment below
-            } else {
-              // Keep rotating while no object detected
-              moveBase(pub_base_twist, 0.0, 0.0, 0.3);
-
-              // Check scan timeout
-              if((node_->now() - scan_start_time_).seconds() > SCAN_TIMEOUT_SEC) {
-                RCLCPP_WARN(node_->get_logger(), "Scan timeout (%.0f s), object not found, sending Does_not_exist...",
-                           SCAN_TIMEOUT_SEC);
-                stopBase(pub_base_twist);
-                sendMessage(pub_msg, "Does_not_exist");
-                is_failed_ = true;
-                is_scanning_ = false;
-              }
-              break;  // stay in scanning phase this frame
-            }
-          }
-
-          // ---- ALIGNMENT PHASE: object is in view, fine-tune position ----
-          // (reached here only when is_scanning_ == false AND object is in view)
           if((node_->now() - last_detect_) < rclcpp::Duration::from_seconds(1.0)){
 
             if(x_det < 240 - 25*tol_multiplier){
@@ -1719,13 +1922,11 @@ public:
               }
             }
           } else {
-            // Object lost during alignment - re-enter scanning phase
             aligned_x = false;
             aligned_y = false;
-            is_scanning_ = true;
-            scan_start_time_ = rclcpp::Time(0, 0, node_->get_clock()->get_clock_type());
+            moveBase(pub_base_twist, 0.0, 0.0, 0.3);
             RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
-              "Object lost from view, returning to scan mode...");
+              "Object lost from view, rotating to search...");
           }
 
           break;
