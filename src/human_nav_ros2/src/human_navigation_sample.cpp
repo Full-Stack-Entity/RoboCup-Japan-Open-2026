@@ -28,7 +28,10 @@
 #include <sstream>
 #include <chrono>
 #include <cctype>
+#include <iterator>
+#include <utility>
 #include <vector>
+#include <deque>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -53,6 +56,29 @@ private:
     WaitingState,
     Speaking,
     Speakable
+  };
+
+  enum class GuidancePriority
+  {
+    Automatic = 0,
+    Requested = 1,
+    Transition = 2,
+    Error = 3
+  };
+
+  struct PendingGuidance
+  {
+    std::string message;
+    std::string display_type;
+    GuidancePriority priority;
+  };
+
+  enum class PlacementCheckState
+  {
+    Idle,
+    DropDelay,
+    WaitingObjectStatus,
+    SuccessGrace
   };
 
   // human navigation message from/to the moderator
@@ -148,6 +174,31 @@ private:
   double subtitle_hold_until_sec_{0.0};
   std::string last_wrong_object_name_;
   bool wrong_object_hold_active_{false};
+  bool target_object_was_held_{false};
+  bool placement_prompt_locked_{false};
+  bool placement_seeking_target_{false};
+  bool awaiting_requested_avatar_status_{false};
+  PlacementCheckState placement_check_state_{PlacementCheckState::Idle};
+  double placement_check_deadline_sec_{0.0};
+  double object_status_request_sec_{0.0};
+  bool completion_guidance_pending_{false};
+  double drop_check_delay_sec_{1.0};
+  double object_status_timeout_sec_{1.0};
+  double placement_success_grace_sec_{2.0};
+  double initial_region_radius_{0.5};
+  double destination_region_tolerance_{0.1};
+
+  // 所有 guidance 必须经过此队列。自动提示最多占 12 条，剩余 3 条由
+  // 主动请求、阶段转换和抓错提示共享；全场硬上限为 15 条。
+  static constexpr size_t MAX_GUIDANCE_COUNT = 15;
+  static constexpr size_t MAX_AUTOMATIC_GUIDANCE_COUNT = 12;
+  std::deque<PendingGuidance> guidance_queue_;
+  size_t guidance_sent_count_{0};
+  size_t automatic_guidance_sent_count_{0};
+  double last_guidance_sent_sec_{0.0};
+  double guidance_min_interval_sec_{1.0};
+  double speech_state_poll_interval_sec_{0.5};
+  double speech_state_timeout_sec_{2.0};
 
   std::string getDirectionHint(
     double av_x, double av_y,
@@ -184,7 +235,6 @@ private:
   static std::string escapeJsonString(const std::string & s);
   std::string buildContextJson() const;
   std::string polishGuidance(const std::string & draft, const std::string & phase, const std::string & context_json);
-
   void init()
   {
     // 原 ROS1: step = Initialize; speechState = SpeechState::None; reset();
@@ -217,6 +267,19 @@ private:
     subtitle_hold_until_sec_ = 0.0;
     last_wrong_object_name_.clear();
     wrong_object_hold_active_ = false;
+    target_object_was_held_ = false;
+    placement_prompt_locked_ = false;
+    placement_seeking_target_ = false;
+    awaiting_requested_avatar_status_ = false;
+    placement_check_state_ = PlacementCheckState::Idle;
+    placement_check_deadline_sec_ = 0.0;
+    object_status_request_sec_ = 0.0;
+    completion_guidance_pending_ = false;
+    guidance_queue_.clear();
+    guidance_sent_count_ = 0;
+    automatic_guidance_sent_count_ = 0;
+    last_guidance_sent_sec_ = 0.0;
+    speechState = SpeechState::None;
   }
 
   // send humanNaviMsg to the moderator (Unity)
@@ -233,7 +296,7 @@ private:
     RCLCPP_INFO(nodeHandle->get_logger(), "Send message:%s", message.c_str());
   }
 
-  // send guidance_message only
+  // 唯一的底层 guidance 发布函数；业务代码只能调用 queueGuidance()。
   // 原 ROS1: void sendGuidanceMessage(ros::Publisher&, ...) -> ROS2: 使用 rclcpp::Publisher SharedPtr
   void sendGuidanceMessage(
     const rclcpp::Publisher<human_navigation_msgs::msg::HumanNaviGuidanceMsg>::SharedPtr & publisher,
@@ -250,8 +313,6 @@ private:
     guidanceMessage.target_language = "";
 
     publisher->publish(guidanceMessage);
-
-    speechState = SpeechState::Speaking;
 
     RCLCPP_INFO(
       nodeHandle->get_logger(),
@@ -286,11 +347,15 @@ private:
       if (isTaskInfoReceived && !isFinished)
       {
         isRequestReceived = true;
+        // 主动请求必须使用请求之后返回的 AvatarStatus，不能读取旧缓存或省略距离。
+        awaiting_requested_avatar_status_ = true;
+        sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
+        isSentGetAvatarStatus = true;
       }
     }
     else if (message->message == MSG_TASK_SUCCEEDED)
     {
-      // 与 ROS1 一致，暂不处理
+      finishWithCompletionGuidance();
     }
     else if (message->message == MSG_TASK_FAILED)
     {
@@ -298,7 +363,7 @@ private:
     }
     else if (message->message == MSG_TASK_FINISHED)
     {
-      isFinished = true;
+      finishWithCompletionGuidance();
     }
     else if (message->message == MSG_GO_TO_NEXT_SESSION)
     {
@@ -697,6 +762,81 @@ private:
 
     isSentGetAvatarStatus = false;
 
+    const bool target_flag_is_set =
+      static_cast<bool>(avatarStatus.is_target_object_in_left_hand) ||
+      static_cast<bool>(avatarStatus.is_target_object_in_right_hand);
+    // 某些 AvatarStatus 回包在重新拾取时目标布尔值会迟一拍，名称作为兜底。
+    const bool target_name_is_held =
+      (!avatarStatus.object_in_left_hand.empty() &&
+       avatarStatus.object_in_left_hand == targetObjectName) ||
+      (!avatarStatus.object_in_right_hand.empty() &&
+       avatarStatus.object_in_right_hand == targetObjectName);
+    const bool has_target_object = target_flag_is_set || target_name_is_held;
+    const bool has_any_object =
+      !avatarStatus.object_in_left_hand.empty() ||
+      !avatarStatus.object_in_right_hand.empty();
+    const bool has_wrong_object = has_any_object && !has_target_object;
+    const std::string wrong_object = !avatarStatus.object_in_left_hand.empty()
+                                   ? avatarStatus.object_in_left_hand
+                                   : avatarStatus.object_in_right_hand;
+
+    if (step == GuideForPlacement) {
+      // 正确物品脱手后先去抖；判定期间重新拿起会取消本次判定。
+      if (target_object_was_held_ && !has_target_object) {
+        placement_prompt_locked_ = true;
+        placement_seeking_target_ = true;
+        placement_check_state_ = PlacementCheckState::DropDelay;
+        placement_check_deadline_sec_ = nodeHandle->now().seconds() + drop_check_delay_sec_;
+        wrong_object_hold_active_ = false;
+        last_wrong_object_name_.clear();
+      }
+
+      if (has_target_object && placement_prompt_locked_) {
+        // 重新拿起：取消延迟、ObjectStatus 等待或成功宽限。
+        guidance_queue_.clear();
+        placement_check_state_ = PlacementCheckState::Idle;
+        placement_prompt_locked_ = false;
+        placement_seeking_target_ = false;
+        wrong_object_hold_active_ = false;
+        last_wrong_object_name_.clear();
+        queueGuidance(buildCurrentGuidanceWithDistance(), GuidancePriority::Transition);
+      } else if (has_wrong_object &&
+                 (!wrong_object_hold_active_ || wrong_object != last_wrong_object_name_)) {
+        // 锁定抓错提示；同一物品放下后再抓也会形成新的上升沿。
+        guidance_queue_.clear();
+        queueGuidance(
+          "This is not the object. Please try again!\n" +
+          buildDirectionAndDistance(false),
+          GuidancePriority::Error);
+        placement_prompt_locked_ = true;
+        wrong_object_hold_active_ = true;
+        last_wrong_object_name_ = wrong_object;
+      } else if (!has_any_object && wrong_object_hold_active_) {
+        // 放下错误物品：立即恢复目标物的最新方位/距离提示。
+        guidance_queue_.clear();
+        wrong_object_hold_active_ = false;
+        last_wrong_object_name_.clear();
+        placement_prompt_locked_ = false;
+        placement_seeking_target_ = true;
+        queueGuidance(buildCurrentGuidanceWithDistance(), GuidancePriority::Transition);
+      }
+
+      target_object_was_held_ = has_target_object;
+    }
+
+    // X 请求在最新状态回包到达的这一刻生成完整提示，距离不会沿用旧缓存。
+    if (awaiting_requested_avatar_status_) {
+      if (!placement_prompt_locked_) {
+        queueGuidance(buildCurrentGuidanceWithDistance(), GuidancePriority::Requested);
+      }
+      awaiting_requested_avatar_status_ = false;
+    }
+
+    // 锁定提示必须一直显示到下一次拿起物品，不能被自动目的地提示覆盖。
+    if (step == GuideForPlacement && placement_prompt_locked_) {
+      return;
+    }
+
     // 规则≤15条：取消实时距离，改为每隔 N 秒在骨架句后追加方位提示（Forward/Left/Right/Backward/Right here）
     const double now_sec = nodeHandle->now().seconds();
     // 抓取正确后保留字幕3秒，避免被新的周期字幕立刻覆盖
@@ -730,27 +870,18 @@ private:
       std::ostringstream dist_ss;
       dist_ss << std::fixed << std::setprecision(2) << dist_obj;
       guideMsg = base + "\n" + hint + "\nDistance to object: " + dist_ss.str() + " meters";
-      sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
-      last_direction_hint_sec_ = now_sec;
+      if (queueGuidance(guideMsg, GuidancePriority::Automatic)) {
+        last_direction_hint_sec_ = now_sec;
+      }
     }
     else if (step == GuideForPlacement && interval_elapsed)
     {
       sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-      const std::string base = polished_place_base_.empty()
-        ? truncateUtf8(buildStrictPlaceTemplate(), 400)
-        : polished_place_base_;
-      const double av_x = avatarStatus.body.position.x;
-      const double av_y = avatarStatus.body.position.y;
-      const double dest_x = taskInfo.destination.position.x;
-      const double dest_y = taskInfo.destination.position.y;
-      const double dist_dest = std::sqrt(
-        std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2));
-      std::string hint = getDirectionHint(av_x, av_y, dest_x, dest_y, avatarStatus.body.orientation);
-      std::ostringstream dist_ss;
-      dist_ss << std::fixed << std::setprecision(2) << dist_dest;
-      guideMsg = base + "\n" + hint + "\nDistance to destination: " + dist_ss.str() + " meters";
-      sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
-      last_direction_hint_sec_ = now_sec;
+      // 放下目标物后临时切回目标物方位；重新拿起后才使用目的地方位。
+      guideMsg = buildCurrentGuidanceWithDistance();
+      if (queueGuidance(guideMsg, GuidancePriority::Automatic)) {
+        last_direction_hint_sec_ = now_sec;
+      }
     }
   }
 
@@ -775,35 +906,277 @@ private:
     }
 
     isSentGetObjectStatus = false;
+
+    // 只在明确等待本次请求时消费回包，启动前缓存的 ObjectStatus 不参与判定。
+    if (placement_check_state_ == PlacementCheckState::WaitingObjectStatus) {
+      const auto & position = objectStatus.target_object.position;
+      // B 优先于 A，重叠时按完成处理。
+      if (isTargetInDestinationRegion(position)) {
+        finishWithCompletionGuidance();
+      } else if (isTargetInInitialRegion(position)) {
+        lockPlacementGuidance(
+          "You just picked up the correct object.", GuidancePriority::Transition);
+        placement_check_state_ = PlacementCheckState::SuccessGrace;
+        placement_check_deadline_sec_ =
+          nodeHandle->now().seconds() + placement_success_grace_sec_;
+      } else {
+        lockPlacementGuidance(
+          "You put the object in the wrong place.\n" +
+          buildDirectionAndDistance(true),
+          GuidancePriority::Error);
+        placement_check_state_ = PlacementCheckState::Idle;
+      }
+    }
   }
 
-  // 原 ROS1: bool speakGuidanceMessage(ros::Publisher, ros::Publisher, ...) ->
-  // ROS2: 使用 Publisher SharedPtr，时间改为 nodeHandle->now()
-  bool speakGuidanceMessage(
-    const rclcpp::Publisher<human_navigation_msgs::msg::HumanNaviMsg>::SharedPtr & pubHumanNaviMsgLocal,
-    const rclcpp::Publisher<human_navigation_msgs::msg::HumanNaviGuidanceMsg>::SharedPtr & pubGuidanceMsgLocal,
+  bool queueGuidance(
     const std::string & message,
-    int interval = 1)
+    GuidancePriority priority,
+    const std::string & display_type = "All")
   {
-    if (speechState == SpeechState::Speakable)
-    {
-      sendGuidanceMessage(pubGuidanceMsgLocal, message, DISPLAY_TYPE_ALL);
-      // 非周期提示（通过 speakGuidanceMessage 发送）触发后重置周期计时器
-      last_direction_hint_sec_ = 0.0;
-      speechState = SpeechState::None;
-      return true;
+    if (isFinished || message.empty() || guidance_sent_count_ >= MAX_GUIDANCE_COUNT) {
+      return false;
     }
-    else if (speechState == SpeechState::None || speechState == SpeechState::Speaking)
-    {
-      if ((timePrevSpeechStateConfirmed.seconds() + interval) < nodeHandle->now().seconds())
-      {
-        sendMessage(pubHumanNaviMsgLocal, MSG_GET_SPEECH_STATE);
-        timePrevSpeechStateConfirmed = nodeHandle->now();
-        speechState = SpeechState::Speakable;
+
+    const auto queued_automatic = static_cast<size_t>(std::count_if(
+      guidance_queue_.begin(), guidance_queue_.end(),
+      [](const PendingGuidance & item) {
+        return item.priority == GuidancePriority::Automatic;
+      }));
+    if (priority == GuidancePriority::Automatic &&
+        automatic_guidance_sent_count_ + queued_automatic >= MAX_AUTOMATIC_GUIDANCE_COUNT) {
+      RCLCPP_WARN(nodeHandle->get_logger(), "Automatic guidance budget exhausted (12/12)");
+      return false;
+    }
+
+    // 周期提示只保留最新一条；连续按下请求键也只保留一个待处理请求。
+    if (priority == GuidancePriority::Automatic || priority == GuidancePriority::Requested) {
+      auto existing = std::find_if(
+        guidance_queue_.begin(), guidance_queue_.end(),
+        [priority](const PendingGuidance & item) {return item.priority == priority;});
+      if (existing != guidance_queue_.end()) {
+        existing->message = message;
+        existing->display_type = display_type;
+        return true;
       }
     }
 
-    return false;
+    const size_t remaining = MAX_GUIDANCE_COUNT - guidance_sent_count_;
+    if (guidance_queue_.size() >= remaining) {
+      auto lower_priority = std::find_if(
+        guidance_queue_.rbegin(), guidance_queue_.rend(),
+        [priority](const PendingGuidance & item) {
+          return static_cast<int>(item.priority) < static_cast<int>(priority);
+        });
+      if (lower_priority == guidance_queue_.rend()) {
+        RCLCPP_WARN(nodeHandle->get_logger(), "Guidance queue rejected: 15-message limit reserved");
+        return false;
+      }
+      guidance_queue_.erase(std::next(lower_priority).base());
+    }
+
+    PendingGuidance pending{message, display_type, priority};
+    auto insert_at = std::find_if(
+      guidance_queue_.begin(), guidance_queue_.end(),
+      [priority](const PendingGuidance & item) {
+        return static_cast<int>(item.priority) < static_cast<int>(priority);
+      });
+    guidance_queue_.insert(insert_at, std::move(pending));
+    return true;
+  }
+
+  void processGuidanceQueue()
+  {
+    if (isFinished && !completion_guidance_pending_) {
+      guidance_queue_.clear();
+      return;
+    }
+    if (guidance_queue_.empty() || guidance_sent_count_ >= MAX_GUIDANCE_COUNT) {
+      return;
+    }
+
+    const double now_sec = nodeHandle->now().seconds();
+    if (last_guidance_sent_sec_ > 0.0 &&
+        now_sec - last_guidance_sent_sec_ < guidance_min_interval_sec_) {
+      return;
+    }
+
+    if (speechState == SpeechState::Speakable) {
+      const PendingGuidance pending = guidance_queue_.front();
+      guidance_queue_.pop_front();
+      sendGuidanceMessage(pubGuidanceMsg, pending.message, pending.display_type);
+      ++guidance_sent_count_;
+      if (pending.priority == GuidancePriority::Automatic) {
+        ++automatic_guidance_sent_count_;
+      }
+      last_guidance_sent_sec_ = now_sec;
+      last_direction_hint_sec_ = now_sec;
+      speechState = SpeechState::Speaking;
+      if (completion_guidance_pending_) {
+        completion_guidance_pending_ = false;
+        guidance_queue_.clear();
+      }
+      RCLCPP_INFO(
+        nodeHandle->get_logger(), "Guidance count: %zu/%zu (automatic %zu/%zu)",
+        guidance_sent_count_, MAX_GUIDANCE_COUNT,
+        automatic_guidance_sent_count_, MAX_AUTOMATIC_GUIDANCE_COUNT);
+      return;
+    }
+
+    // 查询后必须等待 Speech_state 回包，不能自行假定 TTS 空闲；回包丢失才超时重试。
+    const double since_query_sec = now_sec - timePrevSpeechStateConfirmed.seconds();
+    if (speechState == SpeechState::WaitingState && since_query_sec >= speech_state_timeout_sec_) {
+      RCLCPP_WARN(nodeHandle->get_logger(), "Speech state request timed out; retrying");
+      speechState = SpeechState::None;
+    }
+    if (speechState != SpeechState::WaitingState &&
+        since_query_sec >= speech_state_poll_interval_sec_) {
+      sendMessage(pubHumanNaviMsg, MSG_GET_SPEECH_STATE);
+      timePrevSpeechStateConfirmed = nodeHandle->now();
+      speechState = SpeechState::WaitingState;
+    }
+  }
+
+  void stopGuidanceDispatch()
+  {
+    guidance_queue_.clear();
+    speechState = SpeechState::None;
+    RCLCPP_INFO(
+      nodeHandle->get_logger(), "Guidance dispatch stopped at %zu/%zu messages",
+      guidance_sent_count_, MAX_GUIDANCE_COUNT);
+  }
+
+  std::string buildCurrentGuidance() const
+  {
+    if (step == GuideForPlacement && !placement_seeking_target_) {
+      return polished_place_base_.empty() ? truncateUtf8(buildStrictPlaceTemplate(), 400)
+                                          : polished_place_base_;
+    }
+    return polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
+                                       : polished_pick_base_;
+  }
+
+  std::string buildCurrentGuidanceWithDistance() const
+  {
+    const double av_x = avatarStatus.body.position.x;
+    const double av_y = avatarStatus.body.position.y;
+    const bool placing = step == GuideForPlacement && !placement_seeking_target_;
+    const double target_x = placing ? taskInfo.destination.position.x
+                                    : taskInfo.target_object.position.x;
+    const double target_y = placing ? taskInfo.destination.position.y
+                                    : taskInfo.target_object.position.y;
+    const double distance = std::hypot(av_x - target_x, av_y - target_y);
+    const std::string hint = getDirectionHint(
+      av_x, av_y, target_x, target_y, avatarStatus.body.orientation);
+    std::ostringstream dist_ss;
+    dist_ss << std::fixed << std::setprecision(2) << distance;
+    return buildCurrentGuidance() + "\n" + hint + "\nDistance to " +
+           (placing ? "destination: " : "object: ") + dist_ss.str() + " meters";
+  }
+
+  std::string buildDirectionAndDistance(bool to_destination) const
+  {
+    const double av_x = avatarStatus.body.position.x;
+    const double av_y = avatarStatus.body.position.y;
+    const double target_x = to_destination ? taskInfo.destination.position.x
+                                           : taskInfo.target_object.position.x;
+    const double target_y = to_destination ? taskInfo.destination.position.y
+                                           : taskInfo.target_object.position.y;
+    const double distance = std::hypot(av_x - target_x, av_y - target_y);
+    const std::string hint = getDirectionHint(
+      av_x, av_y, target_x, target_y, avatarStatus.body.orientation);
+    std::ostringstream dist_ss;
+    dist_ss << std::fixed << std::setprecision(2) << distance;
+    return hint + "\nDistance to " +
+           (to_destination ? "destination: " : "correct object: ") +
+           dist_ss.str() + " meters";
+  }
+
+  void lockPlacementGuidance(const std::string & message, GuidancePriority priority)
+  {
+    guidance_queue_.clear();
+    placement_prompt_locked_ = true;
+    placement_seeking_target_ = true;
+    subtitle_hold_until_sec_ = 0.0;
+    queueGuidance(message, priority);
+  }
+
+  void finishWithCompletionGuidance()
+  {
+    if (isFinished) {
+      return;
+    }
+    placement_check_state_ = PlacementCheckState::Idle;
+    placement_prompt_locked_ = true;
+    guidance_queue_.clear();
+    completion_guidance_pending_ = true;
+    if (!queueGuidance("Task completed.", GuidancePriority::Error)) {
+      completion_guidance_pending_ = false;
+      RCLCPP_WARN(nodeHandle->get_logger(), "Completion guidance blocked by 15-message limit");
+    }
+    isFinished = true;
+  }
+
+  bool isTargetInInitialRegion(const geometry_msgs::msg::Point & position) const
+  {
+    return std::hypot(
+      position.x - taskInfo.target_object.position.x,
+      position.y - taskInfo.target_object.position.y) <= initial_region_radius_;
+  }
+
+  bool isTargetInDestinationRegion(const geometry_msgs::msg::Point & position) const
+  {
+    const auto & center = taskInfo.destination.position;
+    const auto & q_msg = taskInfo.destination.orientation;
+    tf2::Quaternion q(q_msg.x, q_msg.y, q_msg.z, q_msg.w);
+    if (q.length2() < 1e-12) {
+      q.setValue(0.0, 0.0, 0.0, 1.0);
+    } else {
+      q.normalize();
+    }
+
+    // 将世界坐标差旋转回 destination 局部坐标系，再与三维半尺寸比较。
+    const tf2::Vector3 world_delta(
+      position.x - center.x, position.y - center.y, position.z - center.z);
+    const tf2::Vector3 local = tf2::Matrix3x3(q.inverse()) * world_delta;
+    const double half_x = std::abs(taskInfo.destination.size.x) * 0.5 +
+                          destination_region_tolerance_;
+    const double half_y = std::abs(taskInfo.destination.size.y) * 0.5 +
+                          destination_region_tolerance_;
+    const double half_z = std::abs(taskInfo.destination.size.z) * 0.5 +
+                          destination_region_tolerance_;
+    return std::abs(local.x()) <= half_x &&
+           std::abs(local.y()) <= half_y &&
+           std::abs(local.z()) <= half_z;
+  }
+
+  void processPlacementCheck()
+  {
+    if (isFinished || placement_check_state_ == PlacementCheckState::Idle) {
+      return;
+    }
+    const double now_sec = nodeHandle->now().seconds();
+    if (placement_check_state_ == PlacementCheckState::DropDelay &&
+        now_sec >= placement_check_deadline_sec_) {
+      placement_check_state_ = PlacementCheckState::WaitingObjectStatus;
+      object_status_request_sec_ = now_sec;
+      isSentGetObjectStatus = true;
+      sendMessage(pubHumanNaviMsg, MSG_GET_OBJECT_STATUS);
+    } else if (placement_check_state_ == PlacementCheckState::WaitingObjectStatus &&
+               now_sec - object_status_request_sec_ >= object_status_timeout_sec_) {
+      // 超时只重试，不使用旧缓存，也不把超时当成 C 区域。
+      object_status_request_sec_ = now_sec;
+      isSentGetObjectStatus = true;
+      sendMessage(pubHumanNaviMsg, MSG_GET_OBJECT_STATUS);
+      RCLCPP_WARN(nodeHandle->get_logger(), "ObjectStatus timed out; retrying");
+    } else if (placement_check_state_ == PlacementCheckState::SuccessGrace &&
+               now_sec >= placement_check_deadline_sec_) {
+      lockPlacementGuidance(
+        "You put the object in the wrong place.\n" +
+        buildDirectionAndDistance(true),
+        GuidancePriority::Error);
+      placement_check_state_ = PlacementCheckState::Idle;
+    }
   }
 
 public:
@@ -858,6 +1231,25 @@ public:
 
     nodeHandle->declare_parameter("direction_hint_interval_sec", 10.0);
     direction_hint_interval_sec_ = nodeHandle->get_parameter("direction_hint_interval_sec").as_double();
+    nodeHandle->declare_parameter("guidance_min_interval_sec", 1.0);
+    guidance_min_interval_sec_ = nodeHandle->get_parameter("guidance_min_interval_sec").as_double();
+    nodeHandle->declare_parameter("speech_state_poll_interval_sec", 0.5);
+    speech_state_poll_interval_sec_ =
+      nodeHandle->get_parameter("speech_state_poll_interval_sec").as_double();
+    nodeHandle->declare_parameter("speech_state_timeout_sec", 2.0);
+    speech_state_timeout_sec_ = nodeHandle->get_parameter("speech_state_timeout_sec").as_double();
+    nodeHandle->declare_parameter("drop_check_delay_sec", 1.0);
+    drop_check_delay_sec_ = nodeHandle->get_parameter("drop_check_delay_sec").as_double();
+    nodeHandle->declare_parameter("object_status_timeout_sec", 1.0);
+    object_status_timeout_sec_ = nodeHandle->get_parameter("object_status_timeout_sec").as_double();
+    nodeHandle->declare_parameter("placement_success_grace_sec", 2.0);
+    placement_success_grace_sec_ =
+      nodeHandle->get_parameter("placement_success_grace_sec").as_double();
+    nodeHandle->declare_parameter("initial_region_radius", 0.5);
+    initial_region_radius_ = nodeHandle->get_parameter("initial_region_radius").as_double();
+    nodeHandle->declare_parameter("destination_region_tolerance", 0.1);
+    destination_region_tolerance_ =
+      nodeHandle->get_parameter("destination_region_tolerance").as_double();
     RCLCPP_INFO(nodeHandle->get_logger(), "LLM path removed; deterministic guidance only.");
 
     timePrevSpeechStateConfirmed = nodeHandle->now();
@@ -867,6 +1259,8 @@ public:
     while (rclcpp::ok())
     {
       rclcpp::spin_some(nodeHandle);
+      processPlacementCheck();
+      processGuidanceQueue();
 
       if (pending_polish_) {
         const std::string draft_pick  = buildStrictPickTemplate();
@@ -931,22 +1325,21 @@ public:
 
             // 用户放下错误物品后，继续保留错误提示4秒再恢复周期提示
             if (wrong_object_hold_active_ && !has_wrong_object) {
+              guidance_queue_.clear();
               wrong_object_hold_active_ = false;
-              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
-              last_direction_hint_sec_ = 0.0;
+              last_wrong_object_name_.clear();
+              subtitle_hold_until_sec_ = 0.0;
+              queueGuidance(buildCurrentGuidanceWithDistance(), GuidancePriority::Transition);
+              last_direction_hint_sec_ = nodeHandle->now().seconds();
             }
 
             if (has_target_object)
             {
               guideMsg = "Please Keep holding the Object";
-              while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
-              {
-                RCLCPP_INFO(nodeHandle->get_logger(), "still waiting");
-                rclcpp::spin_some(nodeHandle);
-              }
-              // 该提示保留4秒，期间字幕更新计时器视为0，防止立即被覆盖
+              queueGuidance(guideMsg, GuidancePriority::Transition);
+              // 短句保留2秒即可读完，避免过久阻塞目的地提示。
               last_direction_hint_sec_ = 0.0;
-              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
+              subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 2.0;
 
               // 抓取正确后立即朝第三阶段目的地方向转向，给受试者即时方向提示
               moveBaseJointTrajectory(
@@ -956,6 +1349,9 @@ public:
                 5.0);
 
               step             = GuideForPlacement;
+              target_object_was_held_ = true;
+              placement_prompt_locked_ = false;
+              placement_seeking_target_ = false;
               isRequestReceived = true;
               last_wrong_object_name_.clear();
               wrong_object_hold_active_ = false;
@@ -969,12 +1365,9 @@ public:
               wrong_object_hold_active_ = true;
               if (wrong_object != last_wrong_object_name_)
               {
-                guideMsg = "This is not the object, Please try again!";
-                while (!speakGuidanceMessage(pubHumanNaviMsg, pubGuidanceMsg, guideMsg))
-                {
-                  RCLCPP_INFO(nodeHandle->get_logger(), "still waiting_2");
-                  rclcpp::spin_some(nodeHandle);
-                }
+                guideMsg = "This is not the object. Please try again!\n" +
+                  buildDirectionAndDistance(false);
+                queueGuidance(guideMsg, GuidancePriority::Error);
                 // 抓错提示保留4秒，避免被后续提示瞬间覆盖
                 subtitle_hold_until_sec_ = nodeHandle->now().seconds() + 4.0;
                 last_wrong_object_name_ = wrong_object;
@@ -985,7 +1378,7 @@ public:
 
           if (isRequestReceived)
           {
-            // 仅保留周期分支发送 guidance，request 分支不再主动发提示词
+            // Guidance_request 已在回调中进入高优先级队列，这里只负责转向。
             moveBaseJointTrajectory(pub_base_trajectory_, 0.0, 0.0, direction_target_object, 5.0);
             time = nodeHandle->now();
             isRequestReceived = false;
@@ -1016,25 +1409,6 @@ public:
               direction_target_direction,
               5.0);
 
-            // 放置阶段：hold 后直接发带距离的提示，不发纯模板（无距离）
-            sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-            const std::string base = polished_place_base_.empty()
-              ? truncateUtf8(buildStrictPlaceTemplate(), 400)
-              : polished_place_base_;
-            const double av_x = avatarStatus.body.position.x;
-            const double av_y = avatarStatus.body.position.y;
-            const double av_z = avatarStatus.body.position.z;
-            const double dest_x = taskInfo.destination.position.x;
-            const double dest_y = taskInfo.destination.position.y;
-            const double dest_z = taskInfo.destination.position.z;
-            const double dist_dest = std::sqrt(
-              std::pow(av_x - dest_x, 2) + std::pow(av_y - dest_y, 2) + std::pow(av_z - dest_z, 2));
-            std::string hint = getDirectionHint(av_x, av_y, dest_x, dest_y, avatarStatus.body.orientation);
-            std::ostringstream dist_ss;
-            dist_ss << std::fixed << std::setprecision(2) << dist_dest;
-            guideMsg = base + "\n" + hint + "\nDistance to destination: " + dist_ss.str() + " meters";
-            sendGuidanceMessage(pubGuidanceMsg, guideMsg, DISPLAY_TYPE_ALL);
-            last_direction_hint_sec_ = now_sec;
             isRequestReceived = false;
           }
 
@@ -1782,4 +2156,3 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return ret;
 }
-
