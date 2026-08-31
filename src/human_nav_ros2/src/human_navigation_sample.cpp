@@ -210,8 +210,6 @@ private:
   static bool isRefrigeratorName(const std::string & readable_name_lower);
   static std::string extractThePhraseLower(const std::string & phrase);
   bool isFusedSlotName(const std::string & readable_name) const;
-  bool hasReadableObjectName(const std::string & readable_name_lower) const;
-  bool shouldForceSplitCafeMota() const;
   std::string normalizeKnownFusionPhrase(std::string text) const;
   /// 基于 getFurnitureRelation 的空间判断，返回 "on/in/near the X"（仅来自 furniture，不掺入 non_target）
   std::string getRelationPhraseForPosition(double dx, double dy, double dz,
@@ -226,6 +224,10 @@ private:
   std::string nearestNearLandmarkName(
     double x, double y, double z,
     double min_distance_m,
+    double max_distance_m,
+    const std::unordered_set<std::string> & banned_lower) const;
+  std::string nearestNearbyObjectName(
+    double x, double y, double z,
     double max_distance_m,
     const std::unordered_set<std::string> & banned_lower) const;
   std::string buildStrictPickTemplate() const;
@@ -837,7 +839,7 @@ private:
       return;
     }
 
-    // 规则≤15条：取消实时距离，改为每隔 N 秒在骨架句后追加方位提示（Forward/Left/Right/Backward/Right here）
+    // 规则≤15条：每隔 N 秒更新钟点方位、距离和静态参照关系。
     const double now_sec = nodeHandle->now().seconds();
     // 抓取正确后保留字幕3秒，避免被新的周期字幕立刻覆盖
     if (subtitle_hold_until_sec_ > 0.0) {
@@ -858,18 +860,7 @@ private:
     if (step == GuideForTakingObject && interval_elapsed)
     {
       sendMessage(pubHumanNaviMsg, MSG_GET_AVATAR_STATUS);
-      const std::string base = polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
-                                                          : polished_pick_base_;
-      const double av_x = avatarStatus.body.position.x;
-      const double av_y = avatarStatus.body.position.y;
-      const double obj_x = taskInfo.target_object.position.x;
-      const double obj_y = taskInfo.target_object.position.y;
-      const double dist_obj = std::sqrt(
-        std::pow(av_x - obj_x, 2) + std::pow(av_y - obj_y, 2));
-      std::string hint = getDirectionHint(av_x, av_y, obj_x, obj_y, avatarStatus.body.orientation);
-      std::ostringstream dist_ss;
-      dist_ss << std::fixed << std::setprecision(2) << dist_obj;
-      guideMsg = base + "\n" + hint + "\nDistance to object: " + dist_ss.str() + " meters";
+      guideMsg = buildCurrentGuidanceWithDistance();
       if (queueGuidance(guideMsg, GuidancePriority::Automatic)) {
         last_direction_hint_sec_ = now_sec;
       }
@@ -1052,7 +1043,7 @@ private:
       return polished_place_base_.empty() ? truncateUtf8(buildStrictPlaceTemplate(), 400)
                                           : polished_place_base_;
     }
-    return polished_pick_base_.empty() ? truncateUtf8(initial_location, 400)
+    return polished_pick_base_.empty() ? truncateUtf8(buildStrictPickTemplate(), 400)
                                        : polished_pick_base_;
   }
 
@@ -1069,9 +1060,9 @@ private:
     const std::string hint = getDirectionHint(
       av_x, av_y, target_x, target_y, avatarStatus.body.orientation);
     std::ostringstream dist_ss;
-    dist_ss << std::fixed << std::setprecision(2) << distance;
-    return buildCurrentGuidance() + "\n" + hint + "\nDistance to " +
-           (placing ? "destination: " : "object: ") + dist_ss.str() + " meters";
+    dist_ss << std::fixed << std::setprecision(1) << distance;
+    return (placing ? "The destination is " : "The object is ") + hint +
+           ", " + dist_ss.str() + " meters away.\n" + buildCurrentGuidance();
   }
 
   std::string buildDirectionAndDistance(bool to_destination) const
@@ -1086,10 +1077,9 @@ private:
     const std::string hint = getDirectionHint(
       av_x, av_y, target_x, target_y, avatarStatus.body.orientation);
     std::ostringstream dist_ss;
-    dist_ss << std::fixed << std::setprecision(2) << distance;
-    return hint + "\nDistance to " +
-           (to_destination ? "destination: " : "correct object: ") +
-           dist_ss.str() + " meters";
+    dist_ss << std::fixed << std::setprecision(1) << distance;
+    return (to_destination ? "The destination is " : "The correct object is ") +
+           hint + ", " + dist_ss.str() + " meters away.";
   }
 
   void lockPlacementGuidance(const std::string & message, GuidancePriority priority)
@@ -1550,8 +1540,12 @@ std::string HumanNavigationSample::toReadableName(const std::string & name)
   }
   std::string out = oss.str();
   const std::string out_low = toLowerAscii(out);
-  if (out_low == "cafe set mota table") {
-    return "mota table";
+  if (out_low == "motatable" || out_low == "mota table" ||
+      out_low == "cafe set mota table") {
+    return "motatable (round table)";
+  }
+  if (out_low == "sidetable" || out_low == "side table") {
+    return "sidetable (rectangular table)";
   }
   return out;
 }
@@ -1634,35 +1628,6 @@ bool HumanNavigationSample::isFusedSlotName(const std::string & readable_name) c
   return false;
 }
 
-bool HumanNavigationSample::hasReadableObjectName(const std::string & readable_name_lower) const
-{
-  const auto matches = [&](const std::string & raw_name) {
-    return toLowerAscii(toReadableName(raw_name)) == readable_name_lower;
-  };
-  if (matches(taskInfo.target_object.name)) {
-    return true;
-  }
-  for (const auto & f : taskInfo.furniture) {
-    if (matches(f.name)) {
-      return true;
-    }
-  }
-  for (const auto & o : taskInfo.non_target_objects) {
-    if (matches(o.name)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool HumanNavigationSample::shouldForceSplitCafeMota() const
-{
-  const bool has_cafe_set = hasReadableObjectName("cafe set");
-  const bool has_mota_table = hasReadableObjectName("mota table");
-  const bool has_fused = hasReadableObjectName("cafe set mota table");
-  return has_cafe_set && has_mota_table && !has_fused;
-}
-
 std::string HumanNavigationSample::normalizeKnownFusionPhrase(std::string text) const
 {
   auto replaceAll = [](std::string & s, const std::string & from, const std::string & to) {
@@ -1672,12 +1637,10 @@ std::string HumanNavigationSample::normalizeKnownFusionPhrase(std::string text) 
       pos = s.find(from, pos + to.size());
     }
   };
-  replaceAll(text, "cafe set mota table", "mota table");
-  replaceAll(text, "Cafe Set Mota Table", "mota table");
-  replaceAll(text, "Cafe set mota table", "mota table");
-  replaceAll(text, "cafe_set_mota_table", "mota table");
-  replaceAll(text, "cafe set mota table,", "mota table,");
-  replaceAll(text, "cafe set mota table.", "mota table.");
+  replaceAll(text, "cafe set mota table", "motatable (round table)");
+  replaceAll(text, "Cafe Set Mota Table", "motatable (round table)");
+  replaceAll(text, "Cafe set mota table", "motatable (round table)");
+  replaceAll(text, "cafe_set_mota_table", "motatable (round table)");
   return text;
 }
 
@@ -1978,6 +1941,40 @@ std::string HumanNavigationSample::nearestNearLandmarkName(
   return "";
 }
 
+// 只使用非目标物体作为第二参照，避免把“地标”和“附近物体”混成同一层描述。
+// 同名物体出现多次时不使用该名称，防止产生歧义。
+std::string HumanNavigationSample::nearestNearbyObjectName(
+  double x, double y, double z,
+  double max_distance_m,
+  const std::unordered_set<std::string> & banned_lower) const
+{
+  std::unordered_map<std::string, size_t> name_counts;
+  for (const auto & object : taskInfo.non_target_objects) {
+    const std::string lower = toLowerAscii("the " + toReadableName(object.name));
+    ++name_counts[lower];
+  }
+
+  std::string nearest;
+  double nearest_distance = max_distance_m;
+  for (const auto & object : taskInfo.non_target_objects) {
+    const std::string readable = toReadableName(object.name);
+    const std::string phrase = "the " + readable;
+    const std::string lower = toLowerAscii(phrase);
+    if (banned_lower.count(lower) > 0 || name_counts[lower] != 1) {
+      continue;
+    }
+    const double distance = std::sqrt(
+      std::pow(x - object.position.x, 2) +
+      std::pow(y - object.position.y, 2) +
+      std::pow(z - object.position.z, 2));
+    if (distance <= nearest_distance) {
+      nearest_distance = distance;
+      nearest = phrase;
+    }
+  }
+  return nearest;
+}
+
 std::string HumanNavigationSample::buildStrictPickTemplate() const
 {
   const std::string target = "the " + toReadableName(taskInfo.target_object.name);
@@ -2000,20 +1997,19 @@ std::string HumanNavigationSample::buildStrictPickTemplate() const
   if (!on_the.empty()) {
     near_banned.insert(on_the);
   }
-  const std::string nearby = nearestNearLandmarkName(tx, ty, tz, 0.0, 3.0, near_banned);
+  const std::string nearby = nearestNearbyObjectName(tx, ty, tz, 3.0, near_banned);
 
   if (!on_slot.empty() && !nearby.empty()) {
     return normalizeKnownFusionPhrase(
-      "Please grab " + target + " " + on_slot + ", near " + nearby +
-      ",where the robot points.");
+      target + " is " + on_slot + ", near " + nearby + ".");
   }
   if (!on_slot.empty()) {
-    return normalizeKnownFusionPhrase("Please grab " + target + " " + on_slot + ",where the robot points.");
+    return normalizeKnownFusionPhrase(target + " is " + on_slot + ".");
   }
   if (!nearby.empty()) {
-    return normalizeKnownFusionPhrase("Please grab " + target + " near " + nearby + ",where the robot points.");
+    return normalizeKnownFusionPhrase(target + " is near " + nearby + ".");
   }
-  return normalizeKnownFusionPhrase("Please grab " + target + ",where the robot points.");
+  return normalizeKnownFusionPhrase("The target is " + target + ".");
 }
 
 std::string HumanNavigationSample::buildStrictPlaceTemplate() const
@@ -2026,23 +2022,10 @@ std::string HumanNavigationSample::buildStrictPlaceTemplate() const
   const double sz = std::abs(taskInfo.destination.size.z);
   std::unordered_set<std::string> on_banned = {std::string("the ") + toLowerAscii(toReadableName(taskInfo.target_object.name))};
   const std::string on_slot = buildOnSlotPhrase(dx, dy, dz, sx, sy, sz, on_banned);
-  std::unordered_set<std::string> near_banned = on_banned;
-  const std::string on_the = extractThePhraseLower(on_slot);
-  if (!on_the.empty()) {
-    near_banned.insert(on_the);
-  }
-  const std::string nearby = nearestNearLandmarkName(dx, dy, dz, 0.0, 3.0, near_banned);
-
-  if (!on_slot.empty() && !nearby.empty()) {
-    return normalizeKnownFusionPhrase("Please place it " + on_slot + ", near " + nearby + ",where the robot points.");
-  }
   if (!on_slot.empty()) {
-    return normalizeKnownFusionPhrase("Please place it " + on_slot + ",where the robot points.");
+    return normalizeKnownFusionPhrase("The destination is " + on_slot + ".");
   }
-  if (!nearby.empty()) {
-    return normalizeKnownFusionPhrase("Please place it near " + nearby + ",where the robot points.");
-  }
-  return normalizeKnownFusionPhrase("Please place it where the robot points.");
+  return "This is the destination location.";
 }
 
 std::string HumanNavigationSample::getDirectionHint(
@@ -2052,12 +2035,6 @@ std::string HumanNavigationSample::getDirectionHint(
 {
   const double dx = target_x - av_x;
   const double dy = target_y - av_y;
-  const double dist = std::sqrt(dx * dx + dy * dy);
-
-  constexpr double NEAR_THRESHOLD = 0.5;
-  if (dist < NEAR_THRESHOLD) {
-    return "It's right here.";
-  }
 
   tf2::Quaternion tf_q;
   tf2::fromMsg(body_orient, tf_q);
@@ -2071,13 +2048,14 @@ std::string HumanNavigationSample::getDirectionHint(
   while (rel > M_PI) rel -= 2.0 * M_PI;
   while (rel < -M_PI) rel += 2.0 * M_PI;
 
-  const double deg45 = M_PI / 4.0;
-  const double deg135 = 3.0 * M_PI / 4.0;
-  if (rel >= -deg45 && rel <= deg45) return "Go forward.";
-  // 坐标系与受试者体感方向相反，左右提示在此交换
-  if (rel > deg45 && rel <= deg135) return "Go left.";
-  if (rel < -deg45 && rel >= -deg135) return "Go right.";
-  return "Go backward.";
+  // Avatar 正前方为 12 点，右侧为 3 点，后方为 6 点，左侧为 9 点。
+  // rel 在数学坐标系中逆时针为正，因此换算钟点时取负号。
+  constexpr double CLOCK_SECTOR = M_PI / 6.0;
+  int hour = (12 - static_cast<int>(std::lround(rel / CLOCK_SECTOR))) % 12;
+  if (hour <= 0) {
+    hour += 12;
+  }
+  return "at your " + std::to_string(hour) + " o'clock";
 }
 
 std::string HumanNavigationSample::buildContextJson() const
