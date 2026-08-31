@@ -1,0 +1,8 @@
+rooms:
+  living: living_room
+  living-room: living_room
+objects: {}
+destinations:
+  here: avatar
+  person: avatar
+  human: avatar
