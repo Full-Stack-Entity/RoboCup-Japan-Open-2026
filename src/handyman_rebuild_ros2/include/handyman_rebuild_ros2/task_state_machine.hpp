@@ -17,10 +17,21 @@ public:
   void setEnvironment(const std::string & environment);
   bool acceptReady();
   bool acceptInstruction(const std::string & instruction, bool corrected = false);
-  void parsingSucceeded();
-  void moderatorSucceeded();
-  void moderatorFailed();
-  void missionCompleted();
+  bool parsingSucceeded();
+  bool roomNavigationSucceeded();
+  bool roomVerified();
+  bool objectLocated();
+  bool approachSucceeded();
+  bool graspSucceeded();
+  bool graspVerified();
+  bool destinationReached();
+  bool placementSucceeded();
+  bool placementVerified();
+  bool objectNotFound();
+  bool giveUp();
+  bool moderatorSucceeded();
+  bool moderatorFailed();
+  bool missionCompleted();
 
 private:
   TaskState state_{TaskState::kBooting};

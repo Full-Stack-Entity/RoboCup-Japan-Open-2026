@@ -44,30 +44,156 @@ bool TaskStateMachine::acceptInstruction(const std::string & instruction, bool c
   return true;
 }
 
-void TaskStateMachine::parsingSucceeded()
+bool TaskStateMachine::parsingSucceeded()
 {
-  if (state_ == TaskState::kParsingInstruction) {
-    state_ = TaskState::kNavigatingToRoom;
+  if (state_ != TaskState::kParsingInstruction) {
+    return false;
+  }
+  state_ = TaskState::kNavigatingToRoom;
+  return true;
+}
+
+bool TaskStateMachine::roomNavigationSucceeded()
+{
+  if (state_ != TaskState::kNavigatingToRoom) {
+    return false;
+  }
+  state_ = TaskState::kVerifyingRoom;
+  return true;
+}
+
+bool TaskStateMachine::roomVerified()
+{
+  if (state_ != TaskState::kVerifyingRoom) {
+    return false;
+  }
+  state_ = TaskState::kSearchingObject;
+  return true;
+}
+
+bool TaskStateMachine::objectLocated()
+{
+  if (state_ != TaskState::kSearchingObject) {
+    return false;
+  }
+  state_ = TaskState::kApproachingObject;
+  return true;
+}
+
+bool TaskStateMachine::approachSucceeded()
+{
+  if (state_ != TaskState::kApproachingObject) {
+    return false;
+  }
+  state_ = TaskState::kGrasping;
+  return true;
+}
+
+bool TaskStateMachine::graspSucceeded()
+{
+  if (state_ != TaskState::kGrasping) {
+    return false;
+  }
+  state_ = TaskState::kVerifyingGrasp;
+  return true;
+}
+
+bool TaskStateMachine::graspVerified()
+{
+  if (state_ != TaskState::kVerifyingGrasp) {
+    return false;
+  }
+  state_ = TaskState::kNavigatingToDestination;
+  return true;
+}
+
+bool TaskStateMachine::destinationReached()
+{
+  if (state_ != TaskState::kNavigatingToDestination) {
+    return false;
+  }
+  state_ = TaskState::kPlacing;
+  return true;
+}
+
+bool TaskStateMachine::placementSucceeded()
+{
+  if (state_ != TaskState::kPlacing) {
+    return false;
+  }
+  state_ = TaskState::kVerifyingPlacement;
+  return true;
+}
+
+bool TaskStateMachine::placementVerified()
+{
+  if (state_ != TaskState::kVerifyingPlacement) {
+    return false;
+  }
+  state_ = TaskState::kWaitingModeratorResult;
+  return true;
+}
+
+bool TaskStateMachine::objectNotFound()
+{
+  if (state_ != TaskState::kSearchingObject) {
+    return false;
+  }
+  state_ = TaskState::kRecovering;
+  return true;
+}
+
+bool TaskStateMachine::giveUp()
+{
+  switch (state_) {
+    case TaskState::kParsingInstruction:
+    case TaskState::kNavigatingToRoom:
+    case TaskState::kVerifyingRoom:
+    case TaskState::kSearchingObject:
+    case TaskState::kApproachingObject:
+    case TaskState::kGrasping:
+    case TaskState::kVerifyingGrasp:
+    case TaskState::kNavigatingToDestination:
+    case TaskState::kPlacing:
+    case TaskState::kVerifyingPlacement:
+    case TaskState::kRecovering:
+      state_ = TaskState::kWaitingModeratorResult;
+      return true;
+    default:
+      return false;
   }
 }
 
-void TaskStateMachine::moderatorSucceeded()
+bool TaskStateMachine::moderatorSucceeded()
 {
-  if (state_ == TaskState::kWaitingModeratorResult) {
-    state_ = TaskState::kWaitingReady;
-    task_ = HandymanTask{};
+  if (state_ != TaskState::kWaitingModeratorResult) {
+    return false;
   }
-}
-
-void TaskStateMachine::moderatorFailed()
-{
   state_ = TaskState::kWaitingReady;
   task_ = HandymanTask{};
+  return true;
 }
 
-void TaskStateMachine::missionCompleted()
+bool TaskStateMachine::moderatorFailed()
 {
+  if (
+    state_ == TaskState::kBooting || state_ == TaskState::kWaitingReady ||
+    state_ == TaskState::kFinished)
+  {
+    return false;
+  }
+  state_ = TaskState::kWaitingReady;
+  task_ = HandymanTask{};
+  return true;
+}
+
+bool TaskStateMachine::missionCompleted()
+{
+  if (state_ == TaskState::kFinished) {
+    return false;
+  }
   state_ = TaskState::kFinished;
+  return true;
 }
 
 }  // namespace handyman_rebuild_ros2
