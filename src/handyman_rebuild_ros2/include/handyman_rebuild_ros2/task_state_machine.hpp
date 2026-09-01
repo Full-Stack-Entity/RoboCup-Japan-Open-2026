@@ -18,6 +18,8 @@ public:
   bool acceptReady();
   bool acceptInstruction(const std::string & instruction, bool corrected = false);
   bool parsingSucceeded();
+  bool parsingSucceeded(const HandymanTask & parsed_task);
+  bool parsingFailed();
   bool roomNavigationSucceeded();
   bool roomVerified();
   bool objectLocated();

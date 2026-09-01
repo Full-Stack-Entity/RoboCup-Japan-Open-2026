@@ -1,0 +1,158 @@
+#include <gtest/gtest.h>
+
+#include <filesystem>
+#include <string>
+
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <nav2_map_server/map_io.hpp>
+
+#include "handyman_rebuild_ros2/environment_config.hpp"
+
+using handyman_rebuild_ros2::HandymanTask;
+using handyman_rebuild_ros2::EnvironmentCatalog;
+
+namespace
+{
+
+std::string resolvePackageUri(const std::string & uri)
+{
+  constexpr char prefix[] = "package://";
+  const std::string resource = uri.substr(sizeof(prefix) - 1);
+  const std::size_t separator = resource.find('/');
+  const std::string package = resource.substr(0, separator);
+  return (
+    std::filesystem::path(ament_index_cpp::get_package_share_directory(package)) /
+    resource.substr(separator + 1)).string();
+}
+
+}  // namespace
+
+TEST(EnvironmentConfigTest, LoadsExactlyFourLayouts)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  EXPECT_EQ(catalog.environments().size(), 4u);
+  EXPECT_NE(catalog.find("LayoutA"), nullptr);
+  EXPECT_NE(catalog.find("LayoutB"), nullptr);
+  EXPECT_NE(catalog.find("LayoutC"), nullptr);
+  EXPECT_NE(catalog.find("LayoutD"), nullptr);
+}
+
+TEST(EnvironmentConfigTest, ResolvesUnityAndInternalEnvironmentNames)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  const auto * unity = catalog.find("LayoutC");
+  const auto * internal = catalog.find("Layout2020HM01");
+  ASSERT_NE(unity, nullptr);
+  ASSERT_NE(internal, nullptr);
+  EXPECT_EQ(unity, internal);
+}
+
+TEST(EnvironmentConfigTest, EveryLayoutHasMapRoomsSearchPointsAndDestinations)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  for (const auto & item : catalog.environments()) {
+    const auto & environment = item.second;
+    EXPECT_EQ(environment.map.rfind("package://", 0), 0u);
+    EXPECT_FALSE(environment.rooms.empty());
+    EXPECT_FALSE(environment.destinations.empty());
+    for (const auto & room : environment.rooms) {
+      EXPECT_GE(room.second.region.size(), 3u);
+      EXPECT_FALSE(room.second.search_points.empty());
+    }
+    for (const auto & destination : environment.destinations) {
+      EXPECT_FALSE(destination.second.empty());
+    }
+  }
+}
+
+TEST(EnvironmentConfigTest, Nav2LoadsEveryConfiguredMapIntoANonEmptyOccupancyGrid)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+
+  for (const auto & item : catalog.environments()) {
+    const auto & environment = item.second;
+    nav_msgs::msg::OccupancyGrid map;
+    const std::string map_yaml = resolvePackageUri(environment.map);
+    ASSERT_EQ(nav2_map_server::loadMapFromYaml(map_yaml, map), nav2_map_server::LOAD_MAP_SUCCESS)
+      << environment.name << " failed to load " << map_yaml;
+    EXPECT_GT(map.info.width, 0u) << environment.name;
+    EXPECT_GT(map.info.height, 0u) << environment.name;
+    EXPECT_GT(map.info.resolution, 0.0F) << environment.name;
+    EXPECT_EQ(
+      map.data.size(),
+      static_cast<std::size_t>(map.info.width) * static_cast<std::size_t>(map.info.height))
+      << environment.name;
+  }
+}
+
+TEST(EnvironmentConfigTest, KeepsMultipleCandidatesForAmbiguousDestinations)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  const auto * layout = catalog.find("LayoutD");
+  ASSERT_NE(layout, nullptr);
+  EXPECT_GT(layout->destinations.at("white_side_table").size(), 1u);
+  EXPECT_GT(layout->destinations.at("wagon").size(), 1u);
+}
+
+TEST(EnvironmentConfigTest, ResolvesUniqueDestinationRoomFromCurrentLayout)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  HandymanTask task;
+  task.environment = "LayoutC";
+  task.pickup_room = "kitchen";
+  task.destination = "dining_table";
+  ASSERT_TRUE(catalog.resolveTask(task, error)) << error;
+  EXPECT_EQ(task.destination_room, "living_room");
+}
+
+TEST(EnvironmentConfigTest, RejectsEntitiesMissingFromCurrentLayout)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  HandymanTask missing_room;
+  missing_room.environment = "LayoutB";
+  missing_room.pickup_room = "bedroom";
+  missing_room.destination = "wagon";
+  EXPECT_FALSE(catalog.resolveTask(missing_room, error));
+
+  HandymanTask missing_destination;
+  missing_destination.environment = "LayoutA";
+  missing_destination.pickup_room = "kitchen";
+  missing_destination.destination = "iron_bed";
+  EXPECT_FALSE(catalog.resolveTask(missing_destination, error));
+}
+
+TEST(EnvironmentConfigTest, RequiresRoomForAmbiguousDestination)
+{
+  EnvironmentCatalog catalog;
+  std::string error;
+  ASSERT_TRUE(catalog.loadFromFile(
+    std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
+  HandymanTask task;
+  task.environment = "LayoutB";
+  task.pickup_room = "kitchen";
+  task.destination = "dining_table";
+  EXPECT_FALSE(catalog.resolveTask(task, error));
+  task.destination_room = "lobby";
+  EXPECT_TRUE(catalog.resolveTask(task, error)) << error;
+}

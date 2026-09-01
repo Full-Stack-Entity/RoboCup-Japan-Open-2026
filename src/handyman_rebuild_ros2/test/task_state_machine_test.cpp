@@ -30,6 +30,31 @@ TEST(TaskStateMachineTest, AcceptsNonEmptyInstructionOnlyInExpectedState)
   EXPECT_EQ(machine.task().raw_instruction, "Go to the kitchen and grasp the apple.");
 }
 
+TEST(TaskStateMachineTest, StoresParsedTaskAndRecoversFromParseFailure)
+{
+  TaskStateMachine machine;
+  machine.bootCompleted();
+  machine.setEnvironment("LayoutA");
+  ASSERT_TRUE(machine.acceptReady());
+  ASSERT_TRUE(machine.acceptInstruction("Bring the apple here."));
+
+  handyman_rebuild_ros2::HandymanTask parsed = machine.task();
+  parsed.pickup_room = "kitchen";
+  parsed.target_object = "apple";
+  parsed.destination = "avatar";
+  parsed.destination_is_avatar = true;
+  ASSERT_TRUE(machine.parsingSucceeded(parsed));
+  EXPECT_EQ(machine.task().pickup_room, "kitchen");
+  EXPECT_EQ(machine.task().target_object, "apple");
+
+  machine.moderatorFailed();
+  machine.setEnvironment("LayoutA");
+  ASSERT_TRUE(machine.acceptReady());
+  ASSERT_TRUE(machine.acceptInstruction("unknown"));
+  EXPECT_TRUE(machine.parsingFailed());
+  EXPECT_EQ(machine.state(), TaskState::kRecovering);
+}
+
 TEST(TaskStateMachineTest, CompletesHappyPathWithoutSkippingStates)
 {
   TaskStateMachine machine;

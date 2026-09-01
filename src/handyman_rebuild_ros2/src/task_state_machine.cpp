@@ -46,10 +46,25 @@ bool TaskStateMachine::acceptInstruction(const std::string & instruction, bool c
 
 bool TaskStateMachine::parsingSucceeded()
 {
+  return parsingSucceeded(task_);
+}
+
+bool TaskStateMachine::parsingSucceeded(const HandymanTask & parsed_task)
+{
   if (state_ != TaskState::kParsingInstruction) {
     return false;
   }
+  task_ = parsed_task;
   state_ = TaskState::kNavigatingToRoom;
+  return true;
+}
+
+bool TaskStateMachine::parsingFailed()
+{
+  if (state_ != TaskState::kParsingInstruction) {
+    return false;
+  }
+  state_ = TaskState::kRecovering;
   return true;
 }
 

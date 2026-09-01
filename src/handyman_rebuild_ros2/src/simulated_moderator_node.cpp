@@ -55,7 +55,7 @@ void SimulatedModeratorNode::onTimer()
 
     switch (step_) {
       case Step::kWaitingConnections:
-        publishIncoming(protocol::CompetitionEvent::kEnvironment, "Environment_01");
+        publishIncoming(protocol::CompetitionEvent::kEnvironment, "LayoutA");
         publishIncoming(protocol::CompetitionEvent::kAreYouReady);
         step_ = Step::kWaitingIAmReady;
         break;
@@ -64,7 +64,7 @@ void SimulatedModeratorNode::onTimer()
         if (handshake_ticks_ % 5 == 0) {
           // DDS discovery can be delayed in WSL. Repeating the idempotent handshake
           // makes the simulator robust without relying on graph discovery counters.
-          publishIncoming(protocol::CompetitionEvent::kEnvironment, "Environment_01");
+          publishIncoming(protocol::CompetitionEvent::kEnvironment, "LayoutA");
           publishIncoming(protocol::CompetitionEvent::kAreYouReady);
         }
         break;
@@ -110,7 +110,7 @@ void SimulatedModeratorNode::onRobotMessage(const handyman_msgs::msg::HandymanMs
         if (step_ == Step::kWaitingRoomReached) {
           publishIncoming(
             protocol::CompetitionEvent::kInstruction,
-            "Go to the kitchen, grasp the apple and bring it to the table.");
+            "Go to the kitchen, grasp the apple and bring it to the dining table.");
         }
         break;
       case Step::kWaitingRoomReached:

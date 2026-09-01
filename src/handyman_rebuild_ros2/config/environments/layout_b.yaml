@@ -1,0 +1,37 @@
+internal_name: Layout2019HM02
+map: package://handyman_ros2/maps/2019HM02.yaml
+initial_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+rooms:
+  living_room:
+    region: [[-0.5, 4.0], [0.5, 4.0], [0.5, 6.0], [5.0, 6.0], [5.0, 12.0], [-0.5, 12.0]]
+    search_points:
+      - {x: 3.5, y: 9.6, yaw: 2.4}
+      - {x: 1.84, y: 10.2, yaw: 0.0}
+  lobby:
+    region: [[-0.5, -1.5], [4.5, -1.5], [4.5, 6.0], [0.5, 6.0], [0.5, 4.0], [-0.5, 4.0]]
+    search_points:
+      - {x: 1.0, y: 0.0, yaw: 0.0}
+      - {x: 2.5, y: 2.0, yaw: 0.0}
+  kitchen:
+    region: [[4.5, -2.0], [10.0, -2.0], [10.0, 5.0], [4.5, 5.0]]
+    search_points:
+      - {x: 5.5, y: -1.13, yaw: 0.0}
+      - {x: 8.42, y: -1.13, yaw: 0.0}
+destinations:
+  white_side_table:
+    - {room: living_room, x: 1.45, y: 7.6, yaw: -1.57}
+    - {room: lobby, x: 1.4, y: -0.5, yaw: -1.57}
+  armchair: [{room: living_room, x: -0.19, y: 4.45, yaw: 3.14}]
+  trash_box_for_recycle: [{room: kitchen, x: 6.7, y: 3.8, yaw: 1.57}]
+  trash_box_for_bottle_can: [{room: kitchen, x: 7.56, y: 3.7, yaw: 1.57}]
+  square_low_table: [{room: living_room, x: 1.28, y: 10.5, yaw: 1.57}]
+  round_low_table: [{room: living_room, x: 1.9, y: 8.3, yaw: 1.57}]
+  dining_table:
+    - {room: kitchen, x: 7.85, y: -1.1, yaw: 3.14}
+    - {room: lobby, x: 2.2, y: 2.0, yaw: 3.14}
+  wooden_side_table:
+    - {room: lobby, x: 1.0, y: 5.25, yaw: 1.57}
+    - {room: kitchen, x: 9.0, y: 3.0, yaw: 0.0}
+  wooden_shelf: [{room: lobby, x: 2.0, y: 5.0, yaw: 1.57}]
+  wagon: [{room: lobby, x: 3.14, y: 0.75, yaw: 0.0}]
+  cardboard_box: [{room: living_room, x: 2.9, y: 7.6, yaw: -1.57}]

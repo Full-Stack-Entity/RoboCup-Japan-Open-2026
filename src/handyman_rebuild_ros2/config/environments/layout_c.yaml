@@ -1,0 +1,39 @@
+internal_name: Layout2020HM01
+map: package://handyman_ros2/maps/2020HM01.yaml
+initial_pose: {x: 0.0, y: 0.0, yaw: 0.0}
+rooms:
+  living_room:
+    region: [[-1.0, -2.5], [5.0, -2.5], [5.0, 5.0], [-1.0, 5.0]]
+    search_points:
+      - {x: 0.5, y: 2.0, yaw: 1.57}
+      - {x: 0.42, y: 3.48, yaw: 2.355}
+      - {x: 4.5, y: 3.48, yaw: 0.0}
+      - {x: 4.5, y: -0.65, yaw: 0.0}
+  bedroom:
+    region: [[-1.0, 5.0], [5.0, 5.0], [5.0, 10.0], [-1.0, 10.0]]
+    search_points:
+      - {x: 0.1, y: 6.9, yaw: 0.0}
+      - {x: 3.0, y: 8.0, yaw: 0.0}
+  kitchen:
+    region: [[5.0, -2.0], [10.0, -2.0], [10.0, 5.0], [5.0, 5.0]]
+    search_points:
+      - {x: 6.5, y: -1.2, yaw: 0.0}
+      - {x: 7.8, y: 1.2, yaw: 0.0}
+      - {x: 6.5, y: 3.9, yaw: 0.0}
+destinations:
+  white_side_table:
+    - {room: living_room, x: -0.4, y: 3.5, yaw: 3.14}
+    - {room: bedroom, x: 2.8, y: 7.2, yaw: -1.57}
+  trash_box_for_recycle: [{room: kitchen, x: 7.2, y: 4.55, yaw: 1.57}]
+  trash_box_for_burnable:
+    - {room: living_room, x: 3.8, y: -1.5, yaw: -1.57}
+    - {room: kitchen, x: 8.3, y: 2.3, yaw: 0.0}
+  trash_box_for_bottle_can:
+    - {room: kitchen, x: 6.4587, y: 4.6449, yaw: 1.57}
+    - {room: kitchen, x: 8.3, y: 3.0, yaw: 0.0}
+  round_low_table: [{room: bedroom, x: -0.2, y: 8.4, yaw: 1.57}]
+  dining_table: [{room: living_room, x: 3.2, y: 0.1, yaw: 1.57}]
+  wooden_side_table: [{room: living_room, x: 2.7, y: -1.6, yaw: -1.57}]
+  iron_bed: [{room: bedroom, x: 3.24, y: 8.2, yaw: 0.0}]
+  wooden_shelf: [{room: living_room, x: 2.4, y: 4.8, yaw: 1.57}]
+  cardboard_box: [{room: bedroom, x: 0.95, y: 8.5, yaw: 1.57}]

@@ -9,10 +9,14 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>ament_index_cpp</depend>
+  <depend>boost</depend>
   <depend>rclcpp</depend>
   <depend>handyman_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>yaml_cpp_vendor</depend>
 
+  <exec_depend>handyman_ros2</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rosbridge_server</exec_depend>
@@ -20,6 +24,7 @@
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>nav2_map_server</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
