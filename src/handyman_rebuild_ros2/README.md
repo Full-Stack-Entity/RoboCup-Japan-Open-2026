@@ -8,13 +8,17 @@
 
 已经提供：
 
-- 官方比赛 topic 与事件常量；
+- 官方比赛 topic、类型化事件和唯一映射表；
+- 输入方向、必填/空 `detail` 与未知事件校验；
+- 只允许构造合法 Robot → Moderator 消息的输出接口；
 - 结构化 `HandymanTask`；
 - 可单元测试的任务状态机；
 - 最小 Coordinator 节点；
 - ROS bridge/SIGVerse bridge 启动入口；
 - 环境、名称和恢复策略配置模板；
 - 后续模块的抽象接口。
+- 显式隔离的无机器人模块模拟模式；
+- 可自动验收完整 happy path 的模拟 Moderator。
 
 尚未实现：
 
@@ -25,17 +29,19 @@
 - 放置、Avatar handover 和放置验证；
 - `Room_reached`、`Does_not_exist`、`Object_grasped`、`Task_finished` 的自动上报。
 
-未完成模块不会伪造成功事件，这是本项目区别于旧固定延时流程的基本原则。
+正常模式下，未完成模块不会伪造成功事件。只有阶段 1 验收专用的
+`simulate_modules` 参数会使用假模块结果，而且默认关闭。
 
 ## 目录职责
 
 ```text
 include/handyman_rebuild_ros2/
-  competition_protocol.hpp  官方协议常量
+  competition_protocol.hpp  官方协议类型与转换接口
   task.hpp                  任务与状态数据模型
   task_state_machine.hpp    纯状态机
   module_interfaces.hpp     后续模块边界
 src/
+  competition_protocol.cpp  唯一映射表、输入解析和输出构造
   coordinator_node.cpp      比赛消息入口和总调度
   task_state_machine.cpp    状态转换实现
 config/
@@ -51,12 +57,25 @@ test/
 ## 编译与测试
 
 ```bash
-colcon build --base-paths src --symlink-install --packages-select handyman_msgs handyman_rebuild_ros2
+colcon build --base-paths src --symlink-install --packages-select handyman_msgs sigverse_ros_bridge handyman_rebuild_ros2
 colcon test --base-paths src --packages-select handyman_rebuild_ros2
 colcon test-result --verbose
 ```
 
 这里显式限定 `src`，可避免工作区根目录中的外部/临时 ROS 包副本被重复发现。
+
+## 阶段 1 完整协议验收
+
+下面的 launch 不连接 Unity，也不会发送机器人控制命令。它会启动 Coordinator、
+假模块结果和模拟 Moderator，自动验证一轮完整协议的消息内容与顺序：
+
+```bash
+source install/setup.bash
+ros2 launch handyman_rebuild_ros2 phase1_simulation.launch.py
+```
+
+看到 `PHASE 1 SIMULATION PASSED` 且两个节点正常退出即为通过。同一轮回归也已加入
+`colcon test`，其中任何消息错序、内容错误或 10 秒超时都会失败。
 
 ## 启动
 

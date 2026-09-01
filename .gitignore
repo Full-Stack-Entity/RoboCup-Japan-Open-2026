@@ -65,6 +65,7 @@ training/weights/**
 !training/weights/**/.gitkeep
 
 # training Python 缓存
+**/__pycache__/
 training/scripts/__pycache__/
 training/tests/__pycache__/
 
