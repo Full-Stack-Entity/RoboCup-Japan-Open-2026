@@ -47,7 +47,7 @@ TEST(EnvironmentConfigTest, ResolvesUnityAndInternalEnvironmentNames)
   ASSERT_TRUE(catalog.loadFromFile(
     std::string(HANDYMAN_CONFIG_DIR) + "/environments.yaml", error)) << error;
   const auto * unity = catalog.find("LayoutC");
-  const auto * internal = catalog.find("Layout2020HM01");
+  const auto * internal = catalog.find("LayoutC");
   ASSERT_NE(unity, nullptr);
   ASSERT_NE(internal, nullptr);
   EXPECT_EQ(unity, internal);
@@ -118,7 +118,7 @@ TEST(EnvironmentConfigTest, ResolvesUniqueDestinationRoomFromCurrentLayout)
   HandymanTask task;
   task.environment = "LayoutC";
   task.pickup_room = "kitchen";
-  task.destination = "dining_table";
+  task.destination = "corner_sofa";
   ASSERT_TRUE(catalog.resolveTask(task, error)) << error;
   EXPECT_EQ(task.destination_room, "living_room");
 }
@@ -151,8 +151,8 @@ TEST(EnvironmentConfigTest, RequiresRoomForAmbiguousDestination)
   HandymanTask task;
   task.environment = "LayoutB";
   task.pickup_room = "kitchen";
-  task.destination = "dining_table";
+  task.destination = "trash_box_for_bottle_can";
   EXPECT_FALSE(catalog.resolveTask(task, error));
-  task.destination_room = "lobby";
+  task.destination_room = "kitchen";
   EXPECT_TRUE(catalog.resolveTask(task, error)) << error;
 }
