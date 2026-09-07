@@ -6,6 +6,7 @@
 #include <string>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <yaml-cpp/yaml.h>
 
 namespace handyman_rebuild_ros2
 {
@@ -30,6 +31,40 @@ CoordinatorNode::CoordinatorNode(const rclcpp::NodeOptions & options)
     {
       RCLCPP_ERROR(get_logger(), "Failed to load environments: %s", config_error.c_str());
     }
+    NavigationSettings navigation_settings;
+    try {
+      const YAML::Node recovery = YAML::LoadFile(config_directory + "/recovery.yaml");
+      navigation_settings.maximum_attempts =
+        recovery["retries"]["navigation"].as<std::size_t>();
+      navigation_settings.goal_timeout_sec =
+        recovery["timeouts_sec"]["navigation"].as<double>();
+    } catch (const YAML::Exception & exception) {
+      RCLCPP_WARN(
+        get_logger(), "Could not load navigation recovery settings; using defaults: %s",
+        exception.what());
+    }
+    const int maximum_attempts = declare_parameter<int>(
+      "navigation.maximum_attempts", static_cast<int>(navigation_settings.maximum_attempts));
+    navigation_settings.maximum_attempts = static_cast<std::size_t>(std::max(1, maximum_attempts));
+    navigation_settings.goal_timeout_sec = declare_parameter<double>(
+      "navigation.goal_timeout_sec", navigation_settings.goal_timeout_sec);
+    navigation_settings.goal_timeout_sec = std::max(0.1, navigation_settings.goal_timeout_sec);
+    navigation_settings.server_wait_timeout_sec = declare_parameter<double>(
+      "navigation.server_wait_timeout_sec", navigation_settings.server_wait_timeout_sec);
+    navigation_settings.server_wait_timeout_sec = std::max(
+      0.1, navigation_settings.server_wait_timeout_sec);
+    navigation_settings.room_boundary_tolerance_m = declare_parameter<double>(
+      "navigation.room_boundary_tolerance_m", navigation_settings.room_boundary_tolerance_m);
+    navigation_settings.destination_tolerance_m = declare_parameter<double>(
+      "navigation.destination_tolerance_m", navigation_settings.destination_tolerance_m);
+    navigation_settings.map_frame = declare_parameter<std::string>(
+      "navigation.map_frame", navigation_settings.map_frame);
+    navigation_settings.robot_frame = declare_parameter<std::string>(
+      "navigation.robot_frame", navigation_settings.robot_frame);
+    navigation_settings.action_name = declare_parameter<std::string>(
+      "navigation.action_name", navigation_settings.action_name);
+    navigation_executor_ = std::make_unique<NavigationExecutor>(
+      this, &environment_catalog_, navigation_settings);
     using handyman_msgs::msg::HandymanMsg;
     publisher_ = create_publisher<HandymanMsg>(std::string(protocol::kToModeratorTopic), 10);
     subscription_ = create_subscription<HandymanMsg>(
@@ -149,6 +184,49 @@ bool CoordinatorNode::parseCurrentInstruction(const std::string & instruction)
     return true;
   }
 
+void CoordinatorNode::startRoomNavigation()
+{
+    const HandymanTask task = state_machine_.task();
+    const bool started = navigation_executor_ && navigation_executor_->navigateToRoom(
+      task.environment, task.pickup_room,
+      [this](const NavigationOutcome & outcome) {handleNavigationOutcome(outcome);});
+    if (!started) {
+      RCLCPP_ERROR(get_logger(), "Could not start room navigation");
+      if (state_machine_.giveUp()) {
+        publishEvent(protocol::CompetitionEvent::kGiveUp);
+      }
+    }
+  }
+
+void CoordinatorNode::handleNavigationOutcome(const NavigationOutcome & outcome)
+{
+    if (!outcome.success) {
+      RCLCPP_ERROR(
+        get_logger(), "Navigation failed after %zu attempt(s): %s",
+        outcome.attempts, outcome.reason.c_str());
+      if (state_machine_.giveUp()) {
+        publishEvent(protocol::CompetitionEvent::kGiveUp);
+      }
+      return;
+    }
+    if (outcome.target == NavigationTarget::kRoom &&
+      state_machine_.roomNavigationSucceeded() && state_machine_.roomVerified())
+    {
+      RCLCPP_INFO(
+        get_logger(), "Room navigation verified at (%.3f, %.3f) after %zu attempt(s)",
+        outcome.robot_pose.x, outcome.robot_pose.y, outcome.attempts);
+      publishEvent(protocol::CompetitionEvent::kRoomReached);
+      return;
+    }
+    if (outcome.target == NavigationTarget::kDestination && state_machine_.destinationReached()) {
+      RCLCPP_INFO(
+        get_logger(), "Destination navigation verified at (%.3f, %.3f)",
+        outcome.robot_pose.x, outcome.robot_pose.y);
+      return;
+    }
+    RCLCPP_ERROR(get_logger(), "Navigation result did not match the current task state");
+  }
+
 void CoordinatorNode::publishEvent(protocol::CompetitionEvent event)
 {
     const auto built = protocol::makeOutgoingMessage(event);
@@ -182,14 +260,22 @@ void CoordinatorNode::handleEvent(const protocol::CompetitionMessage & message)
       case CompetitionEvent::kInstruction:
         if (state_machine_.acceptInstruction(message.detail)) {
           if (parseCurrentInstruction(message.detail)) {
-            startSimulation();
+            if (simulate_modules_) {
+              startSimulation();
+            } else {
+              startRoomNavigation();
+            }
           }
         }
         break;
       case CompetitionEvent::kCorrectedInstruction:
         if (state_machine_.acceptInstruction(message.detail, true)) {
           if (parseCurrentInstruction(message.detail)) {
-            startSimulation();
+            if (simulate_modules_) {
+              startSimulation();
+            } else {
+              startRoomNavigation();
+            }
           }
         }
         break;
@@ -200,12 +286,18 @@ void CoordinatorNode::handleEvent(const protocol::CompetitionMessage & message)
         break;
       case CompetitionEvent::kTaskFailed:
         stopSimulation();
+        if (navigation_executor_) {
+          navigation_executor_->cancel();
+        }
         if (!state_machine_.moderatorFailed()) {
           RCLCPP_WARN(get_logger(), "Ignored Task_failed in the current state");
         }
         break;
       case CompetitionEvent::kMissionComplete:
         stopSimulation();
+        if (navigation_executor_) {
+          navigation_executor_->cancel();
+        }
         state_machine_.missionCompleted();
         RCLCPP_INFO(get_logger(), "Mission complete received; shutting down safely");
         rclcpp::shutdown();

@@ -30,41 +30,83 @@ rooms:
       - {x: -14.035, y: -7.545, yaw: 2.346871}
       - {x: -14.035, y: -3.145, yaw: -2.33097}
       - {x: -18.235, y: -7.545, yaw: 0.806621}
+routes:
+  - from: bedroom
+    to: kitchen
+    waypoints:
+      - {x: 0.11, y: -1.764144, yaw: 3.141593}
+      - {x: -1.29, y: -1.764144, yaw: -1.55027}
+      - {x: -1.23, y: -4.686742, yaw: 0}
+      - {x: 0.17, y: -4.686742, yaw: -1.168481}
+  - from: bedroom
+    to: living_room
+    waypoints:
+      - {x: 0.11, y: -1.764144, yaw: 3.141593}
+      - {x: -1.29, y: -1.764144, yaw: -1.970838}
+  - from: kitchen
+    to: bedroom
+    waypoints:
+      - {x: 0.17, y: -4.686742, yaw: 3.141593}
+      - {x: -1.23, y: -4.686742, yaw: 1.591323}
+      - {x: -1.29, y: -1.764144, yaw: 0}
+      - {x: 0.11, y: -1.764144, yaw: 0.708826}
+  - from: kitchen
+    to: living_room
+    waypoints:
+      - {x: 0.17, y: -4.686742, yaw: 3.141593}
+      - {x: -1.23, y: -4.686742, yaw: -2.959809}
+  - from: living_room
+    to: bedroom
+    waypoints:
+      - {x: -1.5666, y: -1.722502, yaw: 0}
+      - {x: -0.1666, y: -1.722502, yaw: 0.619491}
+  - from: living_room
+    to: kitchen
+    waypoints:
+      - {x: -1.5666, y: -4.671623, yaw: 0}
+      - {x: -0.1666, y: -4.671623, yaw: -0.727528}
 destinations:
   cardboard_box:
-    - {room: bedroom, x: 0.565, y: 1.655, yaw: 1.7286}
-    - {room: bedroom, x: -0.035, y: 1.855, yaw: 0.72477}
+    - {room: bedroom, x: 0.565, y: 0.755, yaw: 1.552825}
+    - {room: bedroom, x: 1.965, y: 1.755, yaw: 2.766603}
+    - {room: bedroom, x: -0.035, y: 1.955, yaw: 0.496633}
   iron_bed:
-    - {room: bedroom, x: 1.465, y: 1.555, yaw: 0.482836}
-    - {room: bedroom, x: 2.065, y: 1.155, yaw: 1.60208}
+    - {room: bedroom, x: 1.665, y: 0.755, yaw: 1.577813}
+    - {room: bedroom, x: 0.365, y: 1.655, yaw: 0.477888}
+    - {room: bedroom, x: 1.965, y: 0.755, yaw: 1.766644}
   round_low_table:
-    - {room: living_room, x: -4.335, y: -1.245, yaw: -0.034838}
-    - {room: living_room, x: -2.835, y: -1.245, yaw: -3.107124}
-    - {room: living_room, x: -4.035, y: -1.945, yaw: 0.986225}
+    - {room: living_room, x: -1.835, y: -1.245, yaw: -3.126771}
+    - {room: living_room, x: -3.635, y: -3.045, yaw: 1.544872}
+    - {room: living_room, x: -4.135, y: -0.445, yaw: -0.986715}
   trash_box_for_bottle_can:
-    - {room: kitchen, x: 1.265, y: -9.345, yaw: -2.465645}
-    - {room: kitchen, x: 0.365, y: -9.245, yaw: -0.907017}
-    - {room: living_room, x: -3.235, y: -6.445, yaw: 2.600385}
-    - {room: living_room, x: -3.335, y: -5.645, yaw: -2.350777}
-    - {room: living_room, x: -3.935, y: -5.445, yaw: -1.361555}
+    - {room: kitchen, x: 0.765, y: -8.345, yaw: -1.574363}
+    - {room: kitchen, x: 2.165, y: -9.745, yaw: -3.138034}
+    - {room: kitchen, x: -0.235, y: -9.745, yaw: -0.005025}
+    - {room: living_room, x: -2.435, y: -6.145, yaw: 3.115101}
+    - {room: living_room, x: -3.835, y: -4.745, yaw: -1.540746}
+    - {room: living_room, x: -3.835, y: -7.545, yaw: 1.542253}
   trash_box_for_burnable:
-    - {room: living_room, x: -1.635, y: -9.045, yaw: -1.32806}
-    - {room: living_room, x: -2.135, y: -9.645, yaw: -0.0457}
+    - {room: living_room, x: -1.435, y: -8.245, yaw: -1.601556}
+    - {room: living_room, x: -2.835, y: -9.645, yaw: -0.022113}
+    - {room: living_room, x: -2.435, y: -8.645, yaw: -0.822637}
   white_side_table:
-    - {room: bedroom, x: 3.965, y: -0.245, yaw: -0.028275}
-    - {room: bedroom, x: 4.165, y: 0.655, yaw: -1.010935}
-    - {room: bedroom, x: 4.065, y: -1.245, yaw: 0.964704}
-    - {room: living_room, x: -3.835, y: -3.745, yaw: 3.079774}
-    - {room: living_room, x: -5.335, y: -3.745, yaw: 0.058149}
-    - {room: living_room, x: -3.935, y: -2.845, yaw: -2.203545}
-    - {room: living_room, x: -4.935, y: -7.745, yaw: 1.551931}
-    - {room: living_room, x: -4.035, y: -7.645, yaw: 2.514544}
+    - {room: bedroom, x: 4.065, y: -2.045, yaw: 1.206554}
+    - {room: bedroom, x: 4.765, y: 1.655, yaw: -1.58231}
+    - {room: bedroom, x: 2.865, y: -0.245, yaw: -0.011715}
+    - {room: living_room, x: -2.635, y: -3.745, yaw: 3.118245}
+    - {room: living_room, x: -4.435, y: -2.345, yaw: -1.66425}
+    - {room: living_room, x: -4.535, y: -5.445, yaw: 1.586268}
+    - {room: living_room, x: -4.735, y: -8.845, yaw: 1.671432}
+    - {room: living_room, x: -3.035, y: -7.045, yaw: 3.119327}
+    - {room: living_room, x: -4.935, y: -5.145, yaw: -1.563261}
   wooden_shelf:
-    - {room: bedroom, x: 1.365, y: 1.755, yaw: 1.108529}
-    - {room: bedroom, x: 2.065, y: 1.155, yaw: 1.90596}
+    - {room: bedroom, x: 1.665, y: 0.955, yaw: 1.662336}
+    - {room: bedroom, x: 0.465, y: 1.655, yaw: 0.519404}
+    - {room: bedroom, x: 1.365, y: 1.055, yaw: 1.424676}
   wooden_side_table:
-    - {room: kitchen, x: 3.465, y: -4.245, yaw: 1.987154}
-    - {room: kitchen, x: 2.665, y: -4.145, yaw: 0.747662}
-    - {room: kitchen, x: 3.965, y: -3.645, yaw: -3.137666}
-    - {room: living_room, x: -1.835, y: -0.245, yaw: 1.194537}
+    - {room: kitchen, x: 3.165, y: -5.145, yaw: 1.546753}
+    - {room: kitchen, x: 1.765, y: -4.245, yaw: 0.394}
+    - {room: kitchen, x: 4.765, y: -3.645, yaw: -3.139674}
+    - {room: living_room, x: -1.635, y: -1.145, yaw: 1.543651}
     - {room: living_room, x: -2.735, y: -0.245, yaw: 0.490957}
+    - {room: living_room, x: -2.635, y: -0.745, yaw: 0.817465}

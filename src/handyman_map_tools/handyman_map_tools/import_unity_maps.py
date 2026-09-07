@@ -9,7 +9,7 @@ import shutil
 import sys
 from typing import Any, Dict, List, Sequence, Tuple
 
-from .occupancy_map import OccupancyMap
+from .occupancy_map import OccupancyMap, point_in_polygon
 from .semantic_map import load, require_valid
 
 
@@ -151,11 +151,17 @@ def _approach_poses(
     destination: Dict[str, Any],
     count: int = 3,
 ) -> List[Pose]:
-    target = (
-        float(destination['pose']['x']),
-        float(destination['pose']['y']),
+    bounds = (
+        destination.get('oriented_bounds')
+        or destination.get('axis_aligned_bounds')
+        or {}
     )
-    bounds = destination.get('axis_aligned_bounds') or {}
+    bounds_center = bounds.get('center') or {}
+    model_pose = destination.get('model_pose') or destination['pose']
+    target = (
+        float(bounds_center.get('x', model_pose['x'])),
+        float(bounds_center.get('y', model_pose['y'])),
+    )
     size = bounds.get('size') or {}
     object_radius = 0.5 * max(
         abs(float(size.get('x', 0.0))),
@@ -188,37 +194,122 @@ def _approach_poses(
         raise ValueError(
             f"destination {destination['id']!r} has no safe approach pose"
         )
-    candidates.sort(key=lambda item: (
-        abs(_distance(grid.index_to_world(item), target) - preferred),
-        -grid.clearance(item),
-    ))
+    has_model_front = (
+        destination.get('front_source') == 'model_transform_forward'
+        and max(
+            abs(float(size.get('x', 0.0))),
+            abs(float(size.get('y', 0.0))),
+        ) >= 0.10
+    )
+    if not has_model_front:
+        # Preserve schema-v1 behavior for already exported competition maps.
+        candidates.sort(key=lambda item: (
+            abs(_distance(grid.index_to_world(item), target) - preferred),
+            -grid.clearance(item),
+        ))
+        selected: List[int] = []
+        selected_angles: List[float] = []
+        for index in candidates:
+            point = grid.index_to_world(index)
+            angle = math.atan2(point[1] - target[1], point[0] - target[0])
+            if all(
+                abs(math.atan2(
+                    math.sin(angle - old), math.cos(angle - old)
+                )) >= math.radians(55.0)
+                for old in selected_angles
+            ):
+                selected.append(index)
+                selected_angles.append(angle)
+                if len(selected) == count:
+                    break
+        if len(selected) == 1:
+            first_point = grid.index_to_world(selected[0])
+            alternatives = [
+                item for item in candidates
+                if _distance(grid.index_to_world(item), first_point) >= 0.25
+            ]
+            if alternatives:
+                selected.append(max(
+                    alternatives,
+                    key=lambda item: _distance(
+                        grid.index_to_world(item), first_point
+                    ),
+                ))
+        result = []
+        for index in selected:
+            x, y = grid.index_to_world(index)
+            result.append((
+                x, y, math.atan2(target[1] - y, target[0] - x)
+            ))
+        return result
+
+    front_yaw = float(destination['front_yaw'])
+
+    def angle_difference(left: float, right: float) -> float:
+        return abs(math.atan2(
+            math.sin(left - right), math.cos(left - right)
+        ))
+
+    def best_in_direction(direction: float):
+        directional = []
+        for index in candidates:
+            point = grid.index_to_world(index)
+            angle = math.atan2(point[1] - target[1], point[0] - target[0])
+            error = angle_difference(angle, direction)
+            if error <= math.radians(52.0):
+                directional.append((index, point, error))
+        if not directional:
+            return None
+        return min(directional, key=lambda item: (
+            item[2],
+            abs(_distance(item[1], target) - preferred),
+            -_boundary_distance(item[1], polygon),
+            -grid.clearance(item[0]),
+        ))[0]
+
+    # Transform.forward is exported as the furniture front. Runtime retry
+    # order is deliberately front, safer side, other side, and only then a
+    # geometry-only fallback. This keeps wall-side trash-bin poses last.
+    front = best_in_direction(front_yaw)
+    side_options = [
+        best_in_direction(front_yaw + math.pi / 2.0),
+        best_in_direction(front_yaw - math.pi / 2.0),
+    ]
+    side_options = [item for item in side_options if item is not None]
+    side_options.sort(key=lambda item: (
+        _boundary_distance(grid.index_to_world(item), polygon),
+        grid.clearance(item),
+    ), reverse=True)
+    rear = best_in_direction(front_yaw + math.pi)
+    ordered = ([front] if front is not None else []) + side_options
+    if rear is not None:
+        ordered.append(rear)
+
     selected: List[int] = []
-    selected_angles: List[float] = []
-    for index in candidates:
-        point = grid.index_to_world(index)
-        angle = math.atan2(point[1] - target[1], point[0] - target[0])
-        if all(
-            abs(math.atan2(math.sin(angle - old), math.cos(angle - old)))
-            >= math.radians(55.0)
-            for old in selected_angles
+    for index in ordered:
+        if index not in selected and all(
+            _distance(grid.index_to_world(index), grid.index_to_world(old))
+            >= 0.25
+            for old in selected
         ):
             selected.append(index)
-            selected_angles.append(angle)
+        if len(selected) == count:
+            break
+    if len(selected) < count:
+        remaining = sorted(candidates, key=lambda item: (
+            -_boundary_distance(grid.index_to_world(item), polygon),
+            -grid.clearance(item),
+            abs(_distance(grid.index_to_world(item), target) - preferred),
+        ))
+        for index in remaining:
+            if all(
+                _distance(grid.index_to_world(index), grid.index_to_world(old))
+                >= 0.25
+                for old in selected
+            ):
+                selected.append(index)
             if len(selected) == count:
                 break
-    if len(selected) == 1:
-        first_point = grid.index_to_world(selected[0])
-        alternatives = [
-            item for item in candidates
-            if _distance(grid.index_to_world(item), first_point) >= 0.25
-        ]
-        if alternatives:
-            selected.append(max(
-                alternatives,
-                key=lambda item: _distance(
-                    grid.index_to_world(item), first_point
-                ),
-            ))
     result = []
     for index in selected:
         x, y = grid.index_to_world(index)
@@ -252,6 +343,357 @@ def _safe_initial_pose(
     )
     x, y = grid.index_to_world(nearest)
     return (x, y, original[2]), True
+
+
+def _line_is_safe(
+    grid: OccupancyMap,
+    start: Point,
+    end: Point,
+    minimum_clearance: float,
+) -> bool:
+    length = _distance(start, end)
+    steps = max(1, math.ceil(length / (0.5 * grid.resolution)))
+    for step in range(steps + 1):
+        amount = step / steps
+        index = grid.world_to_index(
+            start[0] + amount * (end[0] - start[0]),
+            start[1] + amount * (end[1] - start[1]),
+        )
+        if grid.clearance(index) < minimum_clearance:
+            return False
+    return True
+
+
+def _door_pose(doorway: Dict[str, Any], field: str) -> Point:
+    pose = doorway[field]
+    return float(pose['x']), float(pose['y'])
+
+
+def _door_center(doorway: Dict[str, Any]) -> Point:
+    return _door_pose(doorway, 'center')
+
+
+def _path_length(grid: OccupancyMap, path: Sequence[int]) -> float:
+    if len(path) < 2:
+        return 0.0
+    points = [grid.index_to_world(index) for index in path]
+    return sum(
+        _distance(points[index - 1], points[index])
+        for index in range(1, len(points))
+    )
+
+
+def _door_centered_waypoints(
+    grid: OccupancyMap,
+    start: Pose,
+    goal: Pose,
+    doorways: Sequence[Dict[str, Any]],
+    from_room: str,
+    to_room: str,
+) -> List[Pose]:
+    source_doors = [
+        item for item in doorways if item.get('room') == from_room
+    ]
+    target_doors = [
+        item for item in doorways if item.get('room') == to_room
+    ]
+    if not source_doors or not target_doors:
+        return []
+
+    def poses_from_points(points: Sequence[Point]) -> List[Pose]:
+        deduplicated = []
+        for point in points:
+            if not deduplicated or _distance(
+                point, deduplicated[-1]
+            ) >= 0.10:
+                deduplicated.append(point)
+        result = []
+        for index, point in enumerate(deduplicated):
+            following = (
+                deduplicated[index + 1]
+                if index + 1 < len(deduplicated)
+                else goal[:2]
+            )
+            result.append((
+                point[0], point[1],
+                math.atan2(
+                    following[1] - point[1],
+                    following[0] - point[0],
+                ),
+            ))
+        return result
+
+    # Adjacent rooms export the same physical opening from both sides. Use
+    # exactly one representation; combining both would cross the doorway and
+    # then immediately drive backward through it.
+    direct_candidates = []
+    for doorway in source_doors:
+        if doorway.get('connected_room') != to_room:
+            continue
+        if not any(
+            _distance(_door_center(doorway), _door_center(target)) <= 0.60
+            for target in target_doors
+        ):
+            continue
+        inside = _door_pose(doorway, 'inside_pose')
+        outside = _door_pose(doorway, 'outside_pose')
+        start_path = grid.shortest_safe_path(start[:2], inside, 0.20)
+        goal_path = grid.shortest_safe_path(outside, goal[:2], 0.20)
+        if start_path and goal_path and _line_is_safe(
+            grid, inside, outside, 0.14
+        ):
+            direct_candidates.append((
+                _path_length(grid, start_path)
+                + _distance(inside, outside)
+                + _path_length(grid, goal_path),
+                [inside, outside],
+            ))
+    for doorway in target_doors:
+        if doorway.get('connected_room') != from_room:
+            continue
+        outside = _door_pose(doorway, 'outside_pose')
+        inside = _door_pose(doorway, 'inside_pose')
+        start_path = grid.shortest_safe_path(start[:2], outside, 0.20)
+        goal_path = grid.shortest_safe_path(inside, goal[:2], 0.20)
+        if start_path and goal_path and _line_is_safe(
+            grid, outside, inside, 0.14
+        ):
+            direct_candidates.append((
+                _path_length(grid, start_path)
+                + _distance(outside, inside)
+                + _path_length(grid, goal_path),
+                [outside, inside],
+            ))
+    if direct_candidates:
+        return poses_from_points(min(
+            direct_candidates, key=lambda item: item[0]
+        )[1])
+
+    best = None
+    for source in source_doors:
+        source_inside = _door_pose(source, 'inside_pose')
+        source_outside = _door_pose(source, 'outside_pose')
+        for target in target_doors:
+            if (
+                source.get('connected_room') == to_room
+                or target.get('connected_room') == from_room
+                or _distance(
+                    _door_center(source), _door_center(target)
+                ) <= 0.60
+            ):
+                continue
+            target_outside = _door_pose(target, 'outside_pose')
+            target_inside = _door_pose(target, 'inside_pose')
+            if not _line_is_safe(
+                grid, source_inside, source_outside, 0.14
+            ) or not _line_is_safe(
+                grid, target_outside, target_inside, 0.14
+            ):
+                continue
+            start_path = grid.shortest_safe_path(
+                start[:2], source_inside, 0.20
+            )
+            corridor_path = grid.shortest_safe_path(
+                source_outside, target_outside, 0.20
+            )
+            goal_path = grid.shortest_safe_path(
+                target_inside, goal[:2], 0.20
+            )
+            if not start_path or not corridor_path or not goal_path:
+                continue
+            cost = (
+                _path_length(grid, start_path)
+                + _distance(source_inside, source_outside)
+                + _path_length(grid, corridor_path)
+                + _distance(target_outside, target_inside)
+                + _path_length(grid, goal_path)
+            )
+            candidate = (
+                cost, source_inside, source_outside,
+                corridor_path, target_outside, target_inside,
+            )
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+    if best is None:
+        return []
+
+    _, source_inside, source_outside, corridor_path, \
+        target_outside, target_inside = best
+    corridor_points = [
+        grid.index_to_world(index) for index in corridor_path
+    ]
+    sparse_corridor: List[Point] = []
+    anchor = 0
+    while anchor + 1 < len(corridor_points):
+        furthest = anchor + 1
+        for candidate in range(anchor + 2, len(corridor_points)):
+            if _line_is_safe(
+                grid,
+                corridor_points[anchor],
+                corridor_points[candidate],
+                0.20,
+            ):
+                furthest = candidate
+            else:
+                break
+        if furthest < len(corridor_points) - 1:
+            sparse_corridor.append(corridor_points[furthest])
+        anchor = furthest
+
+    points = [
+        source_inside,
+        source_outside,
+        *sparse_corridor,
+        target_outside,
+        target_inside,
+    ]
+    return poses_from_points(points)
+
+
+def _route_waypoint_candidates(
+    grid: OccupancyMap,
+    start: Pose,
+    goal: Pose,
+    target_polygon: Sequence[Point],
+    doorways: Sequence[Dict[str, Any]],
+    from_room: str,
+    to_room: str,
+    maximum_routes: int = 3,
+) -> List[List[Pose]]:
+    target_doors = [
+        item for item in doorways if item.get('room') == to_room
+    ]
+    candidates = []
+    for target in target_doors:
+        filtered = [
+            item for item in doorways
+            if item.get('room') != to_room or item is target
+        ]
+        route = _door_centered_waypoints(
+            grid, start, goal, filtered, from_room, to_room
+        )
+        if not route:
+            continue
+        signature = tuple(
+            (round(pose[0], 2), round(pose[1], 2)) for pose in route
+        )
+        if any(existing[0] == signature for existing in candidates):
+            continue
+        length = _distance(start[:2], route[0][:2])
+        length += sum(
+            _distance(route[index - 1][:2], route[index][:2])
+            for index in range(1, len(route))
+        )
+        length += _distance(route[-1][:2], goal[:2])
+        candidates.append((signature, length, route))
+    if candidates:
+        candidates.sort(key=lambda item: item[1])
+        return [item[2] for item in candidates[:maximum_routes]]
+    # A target doorway can be unusable while the source doorway is valid.
+    # Preserve the source's straight exit before simplifying the rest of the
+    # path; otherwise simplification can put a turn inside the door frame.
+    exits = []
+    for source in doorways:
+        if source.get('room') != from_room:
+            continue
+        inside = _door_pose(source, 'inside_pose')
+        outside = _door_pose(source, 'outside_pose')
+        approach = grid.shortest_safe_path(start[:2], inside, 0.20)
+        onward = grid.shortest_safe_path(outside, goal[:2], 0.30)
+        if not approach or not onward or not _line_is_safe(
+            grid, inside, outside, 0.30
+        ):
+            continue
+        yaw = math.atan2(outside[1] - inside[1], outside[0] - inside[0])
+        tail = _route_waypoints(
+            grid, (*outside, yaw), goal, target_polygon
+        )
+        route = [(*inside, yaw), (*outside, yaw), *tail]
+        exits.append((
+            _path_length(grid, approach) + _distance(inside, outside)
+            + _path_length(grid, onward), route,
+        ))
+    if exits:
+        exits.sort(key=lambda item: item[0])
+        return [item[1] for item in exits[:maximum_routes]]
+    fallback = _route_waypoints(
+        grid, start, goal, target_polygon
+    )
+    return [fallback] if fallback else []
+
+
+def _route_waypoints(
+    grid: OccupancyMap,
+    start: Pose,
+    goal: Pose,
+    target_polygon: Sequence[Point],
+    minimum_clearance: float = 0.30,
+    doorways: Sequence[Dict[str, Any]] = (),
+    from_room: str = '',
+    to_room: str = '',
+) -> List[Pose]:
+    """Find sparse, collision-safe turning points for a cross-room route."""
+    if doorways and from_room and to_room:
+        centered = _door_centered_waypoints(
+            grid, start, goal, doorways, from_room, to_room
+        )
+        if centered:
+            return centered
+    path = grid.shortest_safe_path(start[:2], goal[:2], minimum_clearance)
+    if not path:
+        return []
+    points = [grid.index_to_world(index) for index in path]
+    sparse_indices = [0]
+    anchor = 0
+    while anchor + 1 < len(points):
+        furthest = anchor + 1
+        for candidate in range(anchor + 2, len(points)):
+            if _line_is_safe(
+                grid, points[anchor], points[candidate], minimum_clearance
+            ):
+                furthest = candidate
+            else:
+                break
+        sparse_indices.append(furthest)
+        anchor = furthest
+
+    crossing = next((
+        index for index in range(1, len(points))
+        if point_in_polygon(points[index], target_polygon)
+        and not point_in_polygon(points[index - 1], target_polygon)
+    ), None)
+    if crossing is not None:
+        def offset_index(origin: int, direction: int, distance: float) -> int:
+            travelled = 0.0
+            current = origin
+            while 0 <= current + direction < len(points) and travelled < distance:
+                following = current + direction
+                travelled += _distance(points[current], points[following])
+                current = following
+            return current
+
+        outside = offset_index(crossing, -1, 0.70)
+        inside = offset_index(crossing, 1, 0.70)
+        # Replace incidental simplification corners around the doorway with a
+        # deliberate approach and exit pair, leaving room for goal tolerance.
+        sparse_indices = [
+            index for index in sparse_indices
+            if abs(index - crossing) * grid.resolution > 0.90
+        ]
+        sparse_indices.extend((outside, inside, len(points) - 1))
+
+    sparse_indices = sorted(set(sparse_indices))
+    # The source and room search pose are not intermediate waypoints.
+    result = []
+    for index in range(1, len(sparse_indices) - 1):
+        current = points[sparse_indices[index]]
+        following = points[sparse_indices[index + 1]]
+        result.append((
+            current[0],
+            current[1],
+            math.atan2(following[1] - current[1], following[0] - current[0]),
+        ))
+    return result
 
 
 def _render_environment(
@@ -291,6 +733,36 @@ def _render_environment(
             search_poses[0][0], search_poses[0][1]
         )
 
+    lines.append('routes:')
+    route_counts = {}
+    for from_room in sorted(rooms):
+        for to_room in sorted(rooms):
+            if from_room == to_room:
+                continue
+            route_candidates = _route_waypoint_candidates(
+                grid,
+                search_poses_by_room[from_room][0],
+                search_poses_by_room[to_room][0],
+                _polygon(rooms[to_room]),
+                document.get('doorways') or (),
+                from_room,
+                to_room,
+            )
+            route_counts[f'{from_room}->{to_room}'] = len(
+                route_candidates
+            )
+            if not route_candidates:
+                continue
+            for waypoints in route_candidates:
+                lines.extend((
+                    f'  - from: {from_room}',
+                    f'    to: {to_room}',
+                    '    waypoints:',
+                ))
+                lines.extend(
+                    f'      - {_pose_yaml(pose)}' for pose in waypoints
+                )
+
     grouped = defaultdict(list)
     approach_counts = {}
     for destination in document['destinations']:
@@ -328,6 +800,14 @@ def _render_environment(
         'rooms_disconnected_from_robot': disconnected,
         'search_point_counts': {
             name: len(search_poses_by_room[name]) for name in rooms
+        },
+        'route_waypoint_counts': route_counts,
+        'doorway_counts': {
+            room: sum(
+                1 for item in document.get('doorways', [])
+                if item.get('room') == room
+            )
+            for room in rooms
         },
         'destination_approach_counts': approach_counts,
     }

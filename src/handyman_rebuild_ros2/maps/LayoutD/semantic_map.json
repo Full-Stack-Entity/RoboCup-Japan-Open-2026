@@ -1,5 +1,5 @@
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "scene": "Assets/Competition/Handyman/Handyman.unity",
     "environment": "LayoutD",
     "unity_version": "6000.0.62f1",
@@ -100,6 +100,134 @@
             ]
         }
     ],
+    "doorways": [
+        {
+            "id": "living_room_entrance_1",
+            "room": "living_room",
+            "connected_room": "lobby",
+            "center": {
+                "x": 4.593771934509277,
+                "y": -3.4042367935180666,
+                "yaw": 1.5707963705062867
+            },
+            "width": 2.44754958152771,
+            "outside_pose": {
+                "x": 4.593771934509277,
+                "y": -4.104236602783203,
+                "yaw": 1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 4.593771934509277,
+                "y": -2.7042367458343508,
+                "yaw": 1.5707963705062867
+            }
+        },
+        {
+            "id": "living_room_entrance_2",
+            "room": "living_room",
+            "connected_room": "",
+            "center": {
+                "x": 5.79254674911499,
+                "y": -1.4096620082855225,
+                "yaw": 3.1415927410125734
+            },
+            "width": 1.6456598043441773,
+            "outside_pose": {
+                "x": 6.492546558380127,
+                "y": -1.4096620082855225,
+                "yaw": 3.1415927410125734
+            },
+            "inside_pose": {
+                "x": 5.0925469398498539,
+                "y": -1.4096620082855225,
+                "yaw": 3.1415927410125734
+            }
+        },
+        {
+            "id": "living_room_entrance_3",
+            "room": "living_room",
+            "connected_room": "kitchen",
+            "center": {
+                "x": 4.593771934509277,
+                "y": 4.324740409851074,
+                "yaw": -1.5707963705062867
+            },
+            "width": 2.44754958152771,
+            "outside_pose": {
+                "x": 4.593771934509277,
+                "y": 5.024740219116211,
+                "yaw": -1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 4.593771934509277,
+                "y": 3.6247403621673586,
+                "yaw": -1.5707963705062867
+            }
+        },
+        {
+            "id": "kitchen_entrance_1",
+            "room": "kitchen",
+            "connected_room": "living_room",
+            "center": {
+                "x": 4.59681510925293,
+                "y": 4.765263557434082,
+                "yaw": 1.5707963705062867
+            },
+            "width": 2.447174310684204,
+            "outside_pose": {
+                "x": 4.59681510925293,
+                "y": 4.065263748168945,
+                "yaw": 1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 4.59681510925293,
+                "y": 5.465263366699219,
+                "yaw": 1.5707963705062867
+            }
+        },
+        {
+            "id": "bedroom_entrance_1",
+            "room": "bedroom",
+            "connected_room": "",
+            "center": {
+                "x": 9.469276428222657,
+                "y": -2.7123823165893556,
+                "yaw": -1.5707963705062867
+            },
+            "width": 2.032331705093384,
+            "outside_pose": {
+                "x": 9.469276428222657,
+                "y": -2.0123822689056398,
+                "yaw": -1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 9.469276428222657,
+                "y": -3.4123823642730715,
+                "yaw": -1.5707963705062867
+            }
+        },
+        {
+            "id": "lobby_entrance_1",
+            "room": "lobby",
+            "connected_room": "living_room",
+            "center": {
+                "x": 4.608527183532715,
+                "y": -3.934560775756836,
+                "yaw": -1.5707963705062867
+            },
+            "width": 2.489410638809204,
+            "outside_pose": {
+                "x": 4.608527183532715,
+                "y": -3.23456072807312,
+                "yaw": -1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 4.608527183532715,
+                "y": -4.634560585021973,
+                "yaw": -1.5707963705062867
+            }
+        }
+    ],
     "destinations": [
         {
             "id": "armchair#lobby",
@@ -112,14 +240,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": -0.8000001907348633,
+                    "x": -0.8490152359008789,
                     "y": -5.840000152587891
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.1305809020996094,
+                    "y": 0.9098854064941406
                 }
             },
+            "model_pose": {
+                "x": -0.8000001907348633,
+                "y": -5.840000152587891,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -0.8490152359008789,
+                    "y": -5.840000152587891
+                },
+                "size": {
+                    "x": 1.1305809020996094,
+                    "y": 0.9098854064941406
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/armchair#lobby",
+            "model_path": "LayoutD/DestinationCandidates/armchair#lobby",
+            "model_center_distance": 0.049015045166015628,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -134,14 +283,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 3.0322136878967287,
-                    "y": -11.303611755371094
+                    "x": 3.0433411598205568,
+                    "y": -11.242433547973633
                 },
                 "size": {
-                    "x": 0.024427413940429689,
-                    "y": 0.13277435302734376
+                    "x": 0.7567100524902344,
+                    "y": 0.9111480712890625
                 }
             },
+            "model_pose": {
+                "x": 3.0199999809265138,
+                "y": -11.369999885559082,
+                "yaw": -0.17453300952911378
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 3.0433411598205568,
+                    "y": -11.242433547973633
+                },
+                "size": {
+                    "x": 0.9034332036972046,
+                    "y": 1.0287070274353028
+                },
+                "yaw": -0.17453300952911378
+            },
+            "front_yaw": -0.17453300952911378,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/cardboard_box#lobby",
+            "model_path": "LayoutD/DestinationCandidates/cardboard_box#lobby",
+            "model_center_distance": 0.12968416512012483,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -156,14 +326,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 1.557999849319458,
+                    "x": 1.5579999685287476,
                     "y": -7.251999855041504
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.0406076908111573,
+                    "y": 2.311880111694336
                 }
             },
+            "model_pose": {
+                "x": 1.557999849319458,
+                "y": -7.251999855041504,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 1.5579999685287476,
+                    "y": -7.251999855041504
+                },
+                "size": {
+                    "x": 1.0406076908111573,
+                    "y": 2.311880111694336
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/dining_table#lobby",
+            "model_path": "LayoutD/DestinationCandidates/dining_table#lobby",
+            "model_center_distance": 1.1920928955078126e-7,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -178,14 +369,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 7.12999963760376,
-                    "y": -6.377000331878662
+                    "x": 7.39864444732666,
+                    "y": -5.888314247131348
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.9413585662841797,
+                    "y": 3.1680197715759279
                 }
             },
+            "model_pose": {
+                "x": 7.0,
+                "y": -5.840000152587891,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 7.39864444732666,
+                    "y": -5.888314247131348
+                },
+                "size": {
+                    "x": 1.9413585662841797,
+                    "y": 3.168020248413086
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/iron_bed#bedroom",
+            "model_path": "LayoutD/SIGVerseHouse/bed_room",
+            "model_center_distance": 0.8612825870513916,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -200,14 +412,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 1.8399999141693116,
+                    "x": 1.840000033378601,
                     "y": -1.3499999046325684
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.3190691471099854,
+                    "y": 0.7948918342590332
                 }
             },
+            "model_pose": {
+                "x": 1.8399999141693116,
+                "y": -1.3499999046325684,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 1.840000033378601,
+                    "y": -1.3499999046325684
+                },
+                "size": {
+                    "x": 0.7948920726776123,
+                    "y": 1.3190693855285645
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/round_low_table#living_room",
+            "model_path": "LayoutD/DestinationCandidates/round_low_table#living_room",
+            "model_center_distance": 1.1920928955078126e-7,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -226,10 +459,31 @@
                     "y": 1.3820000886917115
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.200000286102295,
+                    "y": 0.7200002670288086
                 }
             },
+            "model_pose": {
+                "x": 1.2799999713897706,
+                "y": 1.3820000886917115,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 1.2799999713897706,
+                    "y": 1.3820000886917115
+                },
+                "size": {
+                    "x": 0.7200005054473877,
+                    "y": 1.200000524520874
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/square_low_table#living_room",
+            "model_path": "LayoutD/DestinationCandidates/square_low_table#living_room",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -244,14 +498,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 6.836999893188477,
+                    "x": 6.837010860443115,
                     "y": -3.3299999237060549
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.6000223159790039,
+                    "y": 0.5000002384185791
                 }
             },
+            "model_pose": {
+                "x": 6.836999893188477,
+                "y": -3.3299999237060549,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 6.837010860443115,
+                    "y": -3.3299999237060549
+                },
+                "size": {
+                    "x": 0.5000002384185791,
+                    "y": 0.6000224351882935
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/trash_box_for_bottle_can#bedroom",
+            "model_path": "LayoutD/DestinationCandidates/trash_box_for_bottle_can#bedroom/trashbox_c03.001",
+            "model_center_distance": 0.000010967254638671875,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -267,13 +542,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": 2.3889999389648439,
-                    "y": 5.272000312805176
+                    "y": 5.2720112800598148
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.5,
+                    "y": 0.6000223159790039
                 }
             },
+            "model_pose": {
+                "x": 2.3889999389648439,
+                "y": 5.272000312805176,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 2.3889999389648439,
+                    "y": 5.2720112800598148
+                },
+                "size": {
+                    "x": 0.5000000596046448,
+                    "y": 0.6000223159790039
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/trash_box_for_burnable#kitchen",
+            "model_path": "LayoutD/DestinationCandidates/trash_box_for_burnable#kitchen/trashbox_c02.001",
+            "model_center_distance": 0.000010967254638671875,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -289,13 +585,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": -1.0500001907348633,
-                    "y": 1.8700000047683716
+                    "y": 1.870011329650879
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.5,
+                    "y": 0.6000224351882935
                 }
             },
+            "model_pose": {
+                "x": -1.0500001907348633,
+                "y": 1.8700000047683716,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -1.0500001907348633,
+                    "y": 1.870011329650879
+                },
+                "size": {
+                    "x": 0.5000000596046448,
+                    "y": 0.6000223159790039
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/trash_box_for_burnable#living_room",
+            "model_path": "LayoutD/DestinationCandidates/trash_box_for_burnable#living_room/trashbox_c02.001",
+            "model_center_distance": 0.000011324882507324219,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -311,13 +628,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": 1.5839998722076417,
-                    "y": 5.306000232696533
+                    "y": 5.306011199951172
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.5,
+                    "y": 0.6000223159790039
                 }
             },
+            "model_pose": {
+                "x": 1.5839998722076417,
+                "y": 5.306000232696533,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 1.5839998722076417,
+                    "y": 5.306011199951172
+                },
+                "size": {
+                    "x": 0.5000000596046448,
+                    "y": 0.6000223159790039
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/trash_box_for_recycle#kitchen",
+            "model_path": "LayoutD/DestinationCandidates/trash_box_for_recycle#kitchen/trashbox_c01.001",
+            "model_center_distance": 0.000010967254638671875,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -332,14 +670,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 8.219999313354493,
+                    "x": 8.245926856994629,
                     "y": -7.1479997634887699
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.6455917358398438,
+                    "y": 0.6059398651123047
                 }
             },
+            "model_pose": {
+                "x": 8.219999313354493,
+                "y": -7.1479997634887699,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 8.245926856994629,
+                    "y": -7.1479997634887699
+                },
+                "size": {
+                    "x": 0.6455917358398438,
+                    "y": 0.6059398651123047
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/wagon#bedroom",
+            "model_path": "LayoutD/DestinationCandidates/wagon#bedroom",
+            "model_center_distance": 0.02592754364013672,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -358,10 +717,31 @@
                     "y": -7.158999919891357
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.5600013732910157,
+                    "y": 0.7200002670288086
                 }
             },
+            "model_pose": {
+                "x": 9.559999465942383,
+                "y": -7.158999919891357,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 9.559999465942383,
+                    "y": -7.158999919891357
+                },
+                "size": {
+                    "x": 0.7200005650520325,
+                    "y": 1.5600016117095948
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/white_side_table#bedroom",
+            "model_path": "LayoutD/DestinationCandidates/white_side_table#bedroom",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -380,10 +760,31 @@
                     "y": 3.1800003051757814
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.7200002670288086,
+                    "y": 1.5600004196166993
                 }
             },
+            "model_pose": {
+                "x": -0.9200000762939453,
+                "y": 3.1800003051757814,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -0.9200000762939453,
+                    "y": 3.1800003051757814
+                },
+                "size": {
+                    "x": 0.7200002670288086,
+                    "y": 1.5600004196166993
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/white_side_table#living_room",
+            "model_path": "LayoutD/DestinationCandidates/white_side_table#living_room",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -399,13 +800,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": 0.8499999046325684,
-                    "y": -11.49000072479248
+                    "y": -11.490001678466797
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.5600004196166993,
+                    "y": 0.720001220703125
                 }
             },
+            "model_pose": {
+                "x": 0.8499999046325684,
+                "y": -11.49000072479248,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 0.8499999046325684,
+                    "y": -11.490001678466797
+                },
+                "size": {
+                    "x": 0.7200015187263489,
+                    "y": 1.5600006580352784
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/white_side_table#lobby",
+            "model_path": "LayoutD/DestinationCandidates/white_side_table#lobby",
+            "model_center_distance": 9.5367431640625e-7,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -420,14 +842,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": -1.1389999389648438,
-                    "y": -1.6999996900558472
+                    "x": -1.126610279083252,
+                    "y": -1.6999995708465577
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.4972658157348633,
+                    "y": 0.9671273231506348
                 }
             },
+            "model_pose": {
+                "x": -1.1389999389648438,
+                "y": -1.6999996900558472,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -1.126610279083252,
+                    "y": -1.6999995708465577
+                },
+                "size": {
+                    "x": 0.4972658157348633,
+                    "y": 0.9671273231506348
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/wooden_shelf#living_room",
+            "model_path": "LayoutD/DestinationCandidates/wooden_shelf#living_room",
+            "model_center_distance": 0.012389659881591797,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -442,14 +885,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 2.2799999713897707,
-                    "y": -4.299999713897705
+                    "x": 2.2800002098083498,
+                    "y": -4.312389373779297
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.967127799987793,
+                    "y": 0.4972667694091797
                 }
             },
+            "model_pose": {
+                "x": 2.2799999713897707,
+                "y": -4.299999713897705,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 2.2800002098083498,
+                    "y": -4.312389373779297
+                },
+                "size": {
+                    "x": 0.497266948223114,
+                    "y": 0.9671279788017273
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/wooden_shelf#lobby",
+            "model_path": "LayoutD/DestinationCandidates/wooden_shelf#lobby",
+            "model_center_distance": 0.012389659881591797,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -468,10 +932,31 @@
                     "y": 5.313000202178955
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.8400006294250488,
+                    "y": 0.48000049591064455
                 }
             },
+            "model_pose": {
+                "x": 0.6489999294281006,
+                "y": 5.313000202178955,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 0.6489999294281006,
+                    "y": 5.313000202178955
+                },
+                "size": {
+                    "x": 0.48000064492225649,
+                    "y": 0.8400008082389832
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/wooden_side_table#kitchen",
+            "model_path": "LayoutD/DestinationCandidates/wooden_side_table#kitchen",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -486,14 +971,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 1.123999834060669,
+                    "x": 1.1239999532699586,
                     "y": -4.371999740600586
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.8400008678436279,
+                    "y": 0.48000001907348635
                 }
             },
+            "model_pose": {
+                "x": 1.123999834060669,
+                "y": -4.371999740600586,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 1.1239999532699586,
+                    "y": -4.371999740600586
+                },
+                "size": {
+                    "x": 0.47999969124794009,
+                    "y": 0.8400010466575623
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutD/DestinationCandidates/wooden_side_table#lobby",
+            "model_path": "LayoutD/DestinationCandidates/wooden_side_table#lobby",
+            "model_center_distance": 1.1920928955078126e-7,
             "prefab_guid": "",
             "asset_path": ""
         }
@@ -853,75 +1359,75 @@
     "messages": [
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/armchair#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/armchair#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/cardboard_box#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/cardboard_box#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/dining_table#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/dining_table#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/iron_bed#bedroom"
+            "text": "Destination model has no prefab source: LayoutD/SIGVerseHouse/bed_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/round_low_table#living_room"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/round_low_table#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/square_low_table#living_room"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/square_low_table#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/trash_box_for_bottle_can#bedroom"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/trash_box_for_bottle_can#bedroom/trashbox_c03.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/trash_box_for_burnable#kitchen"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/trash_box_for_burnable#kitchen/trashbox_c02.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/trash_box_for_burnable#living_room"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/trash_box_for_burnable#living_room/trashbox_c02.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/trash_box_for_recycle#kitchen"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/trash_box_for_recycle#kitchen/trashbox_c01.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/wagon#bedroom"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/wagon#bedroom"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/white_side_table#bedroom"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/white_side_table#bedroom"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/white_side_table#living_room"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/white_side_table#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/white_side_table#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/white_side_table#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/wooden_shelf#living_room"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/wooden_shelf#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/wooden_shelf#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/wooden_shelf#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/wooden_side_table#kitchen"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/wooden_side_table#kitchen"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutD/DestinationCandidates/wooden_side_table#lobby"
+            "text": "Destination model has no prefab source: LayoutD/DestinationCandidates/wooden_side_table#lobby"
         }
     ]
 }

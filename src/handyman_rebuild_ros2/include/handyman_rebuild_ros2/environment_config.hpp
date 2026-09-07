@@ -29,6 +29,13 @@ struct DestinationCandidate
   Pose2D pose;
 };
 
+struct RoomRoute
+{
+  std::string from_room;
+  std::string to_room;
+  std::vector<Pose2D> waypoints;
+};
+
 struct EnvironmentConfig
 {
   std::string name;
@@ -37,6 +44,7 @@ struct EnvironmentConfig
   Pose2D initial_pose;
   std::unordered_map<std::string, RoomConfig> rooms;
   std::unordered_map<std::string, std::vector<DestinationCandidate>> destinations;
+  std::vector<RoomRoute> routes;
 };
 
 class EnvironmentCatalog

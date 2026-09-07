@@ -70,6 +70,7 @@ install(TARGETS
 )
 
 install(DIRECTORY
+  behavior_trees
   launch
   maps
   param

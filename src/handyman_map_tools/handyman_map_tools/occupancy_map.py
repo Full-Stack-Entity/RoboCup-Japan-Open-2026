@@ -1,6 +1,7 @@
 """Small dependency-free helpers for exported ROS occupancy grids."""
 
 from collections import deque
+import heapq
 import math
 from pathlib import Path
 import re
@@ -162,6 +163,53 @@ class OccupancyMap:
     def component(self, x: float, y: float) -> int:
         index = self.world_to_index(x, y)
         return self._component_labels[index] if index >= 0 else -1
+
+    def shortest_safe_path(
+        self,
+        start: Tuple[float, float],
+        goal: Tuple[float, float],
+        minimum_clearance: float = 0.30,
+    ) -> List[int]:
+        """Return a four-connected path biased toward high-clearance space."""
+        start_index = self.world_to_index(*start)
+        goal_index = self.world_to_index(*goal)
+        if (
+            self.clearance(start_index) < minimum_clearance
+            or self.clearance(goal_index) < minimum_clearance
+        ):
+            return []
+        previous = {start_index: -1}
+        costs = {start_index: 0.0}
+        goal_column = goal_index % self.width
+        goal_row = goal_index // self.width
+        pending = [(0.0, start_index)]
+        while pending:
+            _, current = heapq.heappop(pending)
+            if current == goal_index:
+                break
+            for neighbor in self.neighbors(current):
+                clearance = self.clearance(neighbor)
+                if clearance < minimum_clearance:
+                    continue
+                # Penalize cells close to walls. A pure breadth-first path is
+                # shortest but tends to scrape door jambs and corridor edges.
+                new_cost = costs[current] + 1.0 + 0.8 / (clearance + 0.05)
+                if neighbor not in costs or new_cost < costs[neighbor]:
+                    costs[neighbor] = new_cost
+                    previous[neighbor] = current
+                    column = neighbor % self.width
+                    row = neighbor // self.width
+                    heuristic = abs(column - goal_column) + abs(row - goal_row)
+                    heapq.heappush(pending, (new_cost + heuristic, neighbor))
+        if goal_index not in previous:
+            return []
+        result = []
+        current = goal_index
+        while current >= 0:
+            result.append(current)
+            current = previous[current]
+        result.reverse()
+        return result
 
     def safe_cells_in_polygon(
         self,
