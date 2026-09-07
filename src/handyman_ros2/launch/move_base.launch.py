@@ -11,6 +11,8 @@ def generate_launch_description():
 
     pkg_share = get_package_share_directory('handyman_ros2')
     nav2_params_file = os.path.join(pkg_share, 'param', 'nav2_params.yaml')
+    nav_to_pose_bt = os.path.join(
+        pkg_share, 'behavior_trees', 'navigate_w_recovery.xml')
 
     controller_server = Node(
         package='nav2_controller',
@@ -47,7 +49,9 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        parameters=[nav2_params_file],
+        parameters=[nav2_params_file, {
+            'default_nav_to_pose_bt_xml': nav_to_pose_bt,
+        }],
     )
 
     lifecycle_manager = Node(

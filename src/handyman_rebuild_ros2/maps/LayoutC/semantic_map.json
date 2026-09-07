@@ -1,5 +1,5 @@
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "scene": "Assets/Competition/Handyman/Handyman.unity",
     "environment": "LayoutC",
     "unity_version": "6000.0.62f1",
@@ -100,6 +100,92 @@
             ]
         }
     ],
+    "doorways": [
+        {
+            "id": "living_room_entrance_1",
+            "room": "living_room",
+            "connected_room": "lobby",
+            "center": {
+                "x": 0.26190054416656496,
+                "y": -4.141315460205078,
+                "yaw": 1.5707963705062867
+            },
+            "width": 1.8429222106933594,
+            "outside_pose": {
+                "x": 0.26190054416656496,
+                "y": -4.841315269470215,
+                "yaw": 1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 0.26190054416656496,
+                "y": -3.4413154125213625,
+                "yaw": 1.5707963705062867
+            }
+        },
+        {
+            "id": "bedroom_entrance_1",
+            "room": "bedroom",
+            "connected_room": "",
+            "center": {
+                "x": 5.650904655456543,
+                "y": -6.229999542236328,
+                "yaw": -1.5707963705062867
+            },
+            "width": 1.4889529943466187,
+            "outside_pose": {
+                "x": 5.650904655456543,
+                "y": -5.529999732971191,
+                "yaw": -1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 5.650904655456543,
+                "y": -6.929999351501465,
+                "yaw": -1.5707963705062867
+            }
+        },
+        {
+            "id": "lobby_entrance_1",
+            "room": "lobby",
+            "connected_room": "",
+            "center": {
+                "x": 0.6702995300292969,
+                "y": -5.038599014282227,
+                "yaw": 3.1415927410125734
+            },
+            "width": 1.887542963027954,
+            "outside_pose": {
+                "x": 1.3702995777130128,
+                "y": -5.038599014282227,
+                "yaw": 3.1415927410125734
+            },
+            "inside_pose": {
+                "x": -0.02970045804977417,
+                "y": -5.038599014282227,
+                "yaw": 3.1415927410125734
+            }
+        },
+        {
+            "id": "lobby_entrance_2",
+            "room": "lobby",
+            "connected_room": "living_room",
+            "center": {
+                "x": 0.0006246566772460938,
+                "y": -4.1198272705078129,
+                "yaw": -1.5707963705062867
+            },
+            "width": 1.3893496990203858,
+            "outside_pose": {
+                "x": 0.0006246566772460938,
+                "y": -3.4198272228240969,
+                "yaw": -1.5707963705062867
+            },
+            "inside_pose": {
+                "x": 0.0006246566772460938,
+                "y": -4.819827079772949,
+                "yaw": -1.5707963705062867
+            }
+        }
+    ],
     "destinations": [
         {
             "id": "armchair#lobby_1",
@@ -113,13 +199,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": -2.9000000953674318,
-                    "y": -4.989999771118164
+                    "y": -4.940984725952148
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.9098856449127197,
+                    "y": 1.1305813789367676
                 }
             },
+            "model_pose": {
+                "x": -2.9000000953674318,
+                "y": -4.989999771118164,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -2.9000000953674318,
+                    "y": -4.940984725952148
+                },
+                "size": {
+                    "x": 1.1305811405181885,
+                    "y": 0.9098856449127197
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/armchair#lobby_1",
+            "model_path": "LayoutC/DestinationCandidates/armchair#lobby_1",
+            "model_center_distance": 0.049015045166015628,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -135,13 +242,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": -1.8700000047683716,
-                    "y": -5.0
+                    "y": -4.950984954833984
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.9098861217498779,
+                    "y": 1.1305813789367676
                 }
             },
+            "model_pose": {
+                "x": -1.8700000047683716,
+                "y": -5.0,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -1.8700000047683716,
+                    "y": -4.950984954833984
+                },
+                "size": {
+                    "x": 1.1305811405181885,
+                    "y": 0.909886360168457
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/armchair#lobby_2",
+            "model_path": "LayoutC/DestinationCandidates/armchair#lobby_2",
+            "model_center_distance": 0.049015045166015628,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -156,14 +284,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 5.630499839782715,
-                    "y": -11.022500038146973
+                    "x": 5.630834579467773,
+                    "y": -10.960317611694336
                 },
                 "size": {
-                    "x": 0.0009999275207519532,
-                    "y": 0.13500022888183595
+                    "x": 0.624666690826416,
+                    "y": 0.8150596618652344
                 }
             },
+            "model_pose": {
+                "x": 5.630000114440918,
+                "y": -11.09000015258789,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 5.630834579467773,
+                    "y": -10.960317611694336
+                },
+                "size": {
+                    "x": 0.6246662139892578,
+                    "y": 0.8150596618652344
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/cardboard_box#bedroom",
+            "model_path": "LayoutC/DestinationCandidates/cardboard_box#bedroom",
+            "model_center_distance": 0.12968522310256959,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -178,14 +327,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 3.2860000133514406,
-                    "y": -3.419999837875366
+                    "x": 3.207838535308838,
+                    "y": -3.4945878982543947
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.8328485488891602,
+                    "y": 0.8399956226348877
                 }
             },
+            "model_pose": {
+                "x": 3.2860000133514406,
+                "y": -3.419999837875366,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 3.207838535308838,
+                    "y": -3.4945878982543947
+                },
+                "size": {
+                    "x": 0.8328485488891602,
+                    "y": 0.8399953842163086
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/corner_sofa#living_room",
+            "model_path": "LayoutC/DestinationCandidates/corner_sofa#living_room",
+            "model_center_distance": 0.10803978890180588,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -204,10 +374,31 @@
                     "y": -2.2699997425079347
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 2.311880111694336,
+                    "y": 1.0406079292297364
                 }
             },
+            "model_pose": {
+                "x": 3.1399998664855959,
+                "y": -2.2699997425079347,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 3.1399998664855959,
+                    "y": -2.2699997425079347
+                },
+                "size": {
+                    "x": 1.040608286857605,
+                    "y": 2.311880588531494
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/dining_table#living_room",
+            "model_path": "LayoutC/DestinationCandidates/dining_table#living_room",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -226,10 +417,31 @@
                     "y": -8.299999237060547
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.0406075716018677,
+                    "y": 2.311880111694336
                 }
             },
+            "model_pose": {
+                "x": -2.0299999713897707,
+                "y": -8.299999237060547,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -2.0299999713897707,
+                    "y": -8.299999237060547
+                },
+                "size": {
+                    "x": 1.0406074523925782,
+                    "y": 2.311880111694336
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/dining_table#lobby",
+            "model_path": "LayoutC/DestinationCandidates/dining_table#lobby",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -244,14 +456,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": -0.1599999964237213,
-                    "y": -1.2300000190734864
+                    "x": -0.15999996662139893,
+                    "y": -1.2299890518188477
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.5000000596046448,
+                    "y": 0.6000223159790039
                 }
             },
+            "model_pose": {
+                "x": -0.1599999964237213,
+                "y": -1.2300000190734864,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -0.15999996662139893,
+                    "y": -1.2299890518188477
+                },
+                "size": {
+                    "x": 0.5000001192092896,
+                    "y": 0.6000223159790039
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/trash_box_for_burnable#living_room",
+            "model_path": "LayoutC/DestinationCandidates/trash_box_for_burnable#living_room/trashbox_c02.001",
+            "model_center_distance": 0.000010967295565933455,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -267,13 +500,34 @@
             "axis_aligned_bounds": {
                 "center": {
                     "x": -4.11299991607666,
-                    "y": -10.71299934387207
+                    "y": -10.71298885345459
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.5,
+                    "y": 0.6000232696533203
                 }
             },
+            "model_pose": {
+                "x": -4.11299991607666,
+                "y": -10.71299934387207,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -4.11299991607666,
+                    "y": -10.71298885345459
+                },
+                "size": {
+                    "x": 0.5000000596046448,
+                    "y": 0.6000232696533203
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/trash_box_for_burnable#lobby",
+            "model_path": "LayoutC/DestinationCandidates/trash_box_for_burnable#lobby/trashbox_c02.001",
+            "model_center_distance": 0.00001049041748046875,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -288,14 +542,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 4.510000228881836,
+                    "x": 4.535926818847656,
                     "y": -10.89799976348877
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.645592212677002,
+                    "y": 0.6059398651123047
                 }
             },
+            "model_pose": {
+                "x": 4.510000228881836,
+                "y": -10.89799976348877,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 4.535926818847656,
+                    "y": -10.89799976348877
+                },
+                "size": {
+                    "x": 0.6455917358398438,
+                    "y": 0.6059398651123047
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/wagon#bedroom",
+            "model_path": "LayoutC/DestinationCandidates/wagon#bedroom",
+            "model_center_distance": 0.025926589965820314,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -310,14 +585,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": -0.14000000059604646,
+                    "x": -0.1140730082988739,
                     "y": -2.1999998092651369
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.6455923318862915,
+                    "y": 0.6059398651123047
                 }
             },
+            "model_pose": {
+                "x": -0.14000000059604646,
+                "y": -2.1999998092651369,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -0.1140730082988739,
+                    "y": -2.1999998092651369
+                },
+                "size": {
+                    "x": 0.6455923318862915,
+                    "y": 0.6059398651123047
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/wagon#living_room",
+            "model_path": "LayoutC/DestinationCandidates/wagon#living_room",
+            "model_center_distance": 0.025926992297172548,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -332,14 +628,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 3.3510000705718996,
-                    "y": -7.005000114440918
+                    "x": 3.3510003089904787,
+                    "y": -7.00499963760376
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.5600006580352784,
+                    "y": 0.7200002670288086
                 }
             },
+            "model_pose": {
+                "x": 3.3510000705718996,
+                "y": -7.005000114440918,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 3.3510003089904787,
+                    "y": -7.00499963760376
+                },
+                "size": {
+                    "x": 0.7200005650520325,
+                    "y": 1.5600006580352784
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/white_side_table#bedroom_1",
+            "model_path": "LayoutC/DestinationCandidates/white_side_table#bedroom_1",
+            "model_center_distance": 5.331201577973843e-7,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -358,10 +675,31 @@
                     "y": -2.7209997177124025
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 0.7200002670288086,
+                    "y": 1.559999942779541
                 }
             },
+            "model_pose": {
+                "x": 5.970000267028809,
+                "y": -2.7209997177124025,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 5.970000267028809,
+                    "y": -2.7209997177124025
+                },
+                "size": {
+                    "x": 0.7200002670288086,
+                    "y": 1.559999942779541
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/white_side_table#living_room",
+            "model_path": "LayoutC/DestinationCandidates/white_side_table#living_room",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -380,10 +718,31 @@
                     "y": -10.917999267578125
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 1.5600004196166993,
+                    "y": 0.720001220703125
                 }
             },
+            "model_pose": {
+                "x": -2.577000141143799,
+                "y": -10.917999267578125,
+                "yaw": -1.5707964897155762
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": -2.577000141143799,
+                    "y": -10.917999267578125
+                },
+                "size": {
+                    "x": 0.7200015187263489,
+                    "y": 1.5600006580352784
+                },
+                "yaw": -1.5707964897155762
+            },
+            "front_yaw": -1.5707964897155762,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/white_side_table#lobby",
+            "model_path": "LayoutC/DestinationCandidates/white_side_table#lobby",
+            "model_center_distance": 0.0,
             "prefab_guid": "",
             "asset_path": ""
         },
@@ -398,14 +757,35 @@
             },
             "axis_aligned_bounds": {
                 "center": {
-                    "x": 1.3249999284744263,
+                    "x": 2.292849540710449,
                     "y": -10.52400016784668
                 },
                 "size": {
-                    "x": 0.0,
-                    "y": 0.0
+                    "x": 2.164064884185791,
+                    "y": 1.7046432495117188
                 }
             },
+            "model_pose": {
+                "x": 1.3249999284744263,
+                "y": -10.52400016784668,
+                "yaw": 0.0
+            },
+            "oriented_bounds": {
+                "center": {
+                    "x": 2.292849540710449,
+                    "y": -10.52400016784668
+                },
+                "size": {
+                    "x": 2.164064884185791,
+                    "y": 1.7046432495117188
+                },
+                "yaw": 0.0
+            },
+            "front_yaw": 0.0,
+            "front_source": "model_transform_forward",
+            "marker_path": "LayoutC/DestinationCandidates/wooden_bed#bedroom",
+            "model_path": "LayoutC/DestinationCandidates/wooden_bed#bedroom/default",
+            "model_center_distance": 0.967849612236023,
             "prefab_guid": "",
             "asset_path": ""
         }
@@ -695,59 +1075,59 @@
     "messages": [
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/armchair#lobby_1"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/armchair#lobby_1"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/armchair#lobby_2"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/armchair#lobby_2"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/cardboard_box#bedroom"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/cardboard_box#bedroom"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/corner_sofa#living_room"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/corner_sofa#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/dining_table#living_room"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/dining_table#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/dining_table#lobby"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/dining_table#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/trash_box_for_burnable#living_room"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/trash_box_for_burnable#living_room/trashbox_c02.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/trash_box_for_burnable#lobby"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/trash_box_for_burnable#lobby/trashbox_c02.001"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/wagon#bedroom"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/wagon#bedroom"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/wagon#living_room"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/wagon#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/white_side_table#bedroom_1"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/white_side_table#bedroom_1"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/white_side_table#living_room"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/white_side_table#living_room"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/white_side_table#lobby"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/white_side_table#lobby"
         },
         {
             "severity": "warning",
-            "text": "Destination has no prefab source: LayoutC/DestinationCandidates/wooden_bed#bedroom"
+            "text": "Destination model has no prefab source: LayoutC/DestinationCandidates/wooden_bed#bedroom/default"
         }
     ]
 }

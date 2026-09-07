@@ -1,5 +1,7 @@
 # Handyman Rebuild ROS 2
 
+阶段 3 的启动、验证和故障排查见 [阶段3导航.md](阶段3导航.md)。
+
 这是一个独立于旧 `handyman_ros2` 的重构起点。它以官方
 `handyman_msgs/msg/HandymanMsg`、官方 topic 和事件字符串为协议边界，逐步实现可靠的
 导航、搜索、抓取、验证和放置闭环。
@@ -16,18 +18,18 @@
 - 最小 Coordinator 节点；
 - ROS bridge/SIGVerse bridge 启动入口；
 - 环境、名称和恢复策略配置模板；
-- 后续模块的抽象接口。
+- 后续模块的抽象接口；
 - 显式隔离的无机器人模块模拟模式；
 - 可自动验收完整 happy path 的模拟 Moderator。
+- 四布局地图与语义配置加载；
+- Nav2 房间/目的地多候选导航、超时恢复和 TF 区域验证。
 
 尚未实现：
 
-- 自然语言解析；
-- 地图加载和 Nav2；
 - 头部 RGBD 搜索和三维定位；
 - 抓取、抓取验证；
 - 放置、Avatar handover 和放置验证；
-- `Room_reached`、`Does_not_exist`、`Object_grasped`、`Task_finished` 的自动上报。
+- `Does_not_exist`、`Object_grasped`、`Task_finished` 的真实模块自动上报。
 
 正常模式下，未完成模块不会伪造成功事件。只有阶段 1 验收专用的
 `simulate_modules` 参数会使用假模块结果，而且默认关闭。
