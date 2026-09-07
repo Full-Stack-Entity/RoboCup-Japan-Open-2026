@@ -80,3 +80,24 @@ def test_load_accepts_utf8_bom(tmp_path):
     path = tmp_path / 'semantic_map.json'
     path.write_text('\ufeff' + json.dumps(valid_document()), encoding='utf-8')
     assert load(str(path))['environment'] == 'LayoutA'
+
+
+def test_schema_v2_doorway_and_model_geometry_pass():
+    document = valid_document()
+    document['schema_version'] = 2
+    document['doorways'] = [{
+        'id': 'kitchen_entrance_1',
+        'room': 'kitchen',
+        'connected_room': '',
+        'width': 0.9,
+        'center': {'x': 1.0, 'y': 2.0, 'yaw': 0.0},
+        'outside_pose': {'x': 0.3, 'y': 2.0, 'yaw': 0.0},
+        'inside_pose': {'x': 1.7, 'y': 2.0, 'yaw': 0.0},
+    }]
+    document['destinations'][0].update({
+        'model_pose': {'x': 0.5, 'y': 0.5, 'yaw': 1.0},
+        'front_yaw': 1.0,
+        'front_source': 'model_transform_forward',
+    })
+
+    assert validate(document).ok

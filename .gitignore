@@ -9,6 +9,7 @@ reference/*
 !readme.md
 !Interactive-cleanup-overview.md
 !Handyman-overview.md
+!src/handyman_rebuild_ros2/阶段3导航.md
 
 # 本地日志，编译，安装文件
 log/*

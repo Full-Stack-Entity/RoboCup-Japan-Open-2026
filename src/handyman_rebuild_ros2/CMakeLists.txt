@@ -13,14 +13,20 @@ find_package(ament_cmake REQUIRED)
 find_package(Boost REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(handyman_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 
 add_library(handyman_core
   src/competition_protocol.cpp
   src/environment_config.cpp
   src/instruction_parser.cpp
+  src/navigation_plan.cpp
   src/task_state_machine.cpp
 )
 ament_target_dependencies(handyman_core
@@ -39,14 +45,20 @@ target_include_directories(handyman_core PUBLIC
 
 add_library(handyman_nodes
   src/coordinator_node.cpp
+  src/navigation_executor.cpp
   src/simulated_moderator_node.cpp
 )
-target_link_libraries(handyman_nodes handyman_core)
+target_link_libraries(handyman_nodes handyman_core yaml-cpp)
 ament_target_dependencies(handyman_nodes
   ament_index_cpp
   rclcpp
+  rclcpp_action
   handyman_msgs
   geometry_msgs
+  nav2_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
 )
 target_include_directories(handyman_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -69,18 +81,35 @@ add_executable(handyman_phase1_simulation
 target_link_libraries(handyman_phase1_simulation handyman_nodes)
 ament_target_dependencies(handyman_phase1_simulation rclcpp)
 
+add_executable(handyman_initial_pose_localizer src/initial_pose_localizer.cpp)
+ament_target_dependencies(handyman_initial_pose_localizer
+  geometry_msgs
+  rclcpp
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
 install(TARGETS
   handyman_core
   handyman_nodes
   handyman_coordinator
   handyman_simulated_moderator
   handyman_phase1_simulation
+  handyman_initial_pose_localizer
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY launch config behavior_trees maps DESTINATION share/${PROJECT_NAME})
+install(
+  DIRECTORY launch config behavior_trees maps
+  DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
+)
+install(FILES 阶段3导航.md DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/analyze_navigation_bag.py DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -113,9 +142,17 @@ if(BUILD_TESTING)
     nav2_map_server
   )
 
+  ament_add_gtest(navigation_plan_test test/navigation_plan_test.cpp)
+  target_link_libraries(navigation_plan_test handyman_core)
+  target_include_directories(navigation_plan_test PRIVATE include)
+
   add_launch_test(
     test/protocol_roundtrip_launch_test.py
     TIMEOUT 30
+  )
+  add_launch_test(
+    test/navigation_roundtrip_launch_test.py
+    TIMEOUT 40
   )
 endif()
 

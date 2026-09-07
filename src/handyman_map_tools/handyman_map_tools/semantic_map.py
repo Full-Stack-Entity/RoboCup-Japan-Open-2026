@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 EXPECTED_ROOMS = {'living_room', 'kitchen', 'bedroom', 'lobby'}
 
 
@@ -89,11 +89,11 @@ def validate(document: Dict[str, Any]) -> ValidationResult:
     errors: List[str] = []
     warnings: List[str] = []
 
-    if document.get('schema_version') != SUPPORTED_SCHEMA_VERSION:
+    if document.get('schema_version') not in SUPPORTED_SCHEMA_VERSIONS:
         errors.append(
             'unsupported schema_version: '
-            f"{document.get('schema_version')!r}; expected "
-            f'{SUPPORTED_SCHEMA_VERSION}'
+            f"{document.get('schema_version')!r}; expected one of "
+            f'{sorted(SUPPORTED_SCHEMA_VERSIONS)}'
         )
     if not _nonempty_string(document.get('environment')):
         errors.append('environment must be a non-empty string')
@@ -103,6 +103,10 @@ def validate(document: Dict[str, Any]) -> ValidationResult:
     rooms = _list_field(document, 'rooms', errors)
     destinations = _list_field(document, 'destinations', errors)
     candidates = _list_field(document, 'object_spawn_candidates', errors)
+    doorways = document.get('doorways', [])
+    if not isinstance(doorways, list):
+        errors.append('doorways must be a list')
+        doorways = []
 
     room_ids = _unique_ids(rooms, 'room', errors)
     missing_rooms = sorted(EXPECTED_ROOMS - set(room_ids))
@@ -123,6 +127,30 @@ def validate(document: Dict[str, Any]) -> ValidationResult:
                 errors,
             )
 
+    doorway_ids = _unique_ids(doorways, 'doorway', errors)
+    if document.get('schema_version') == 2 and not doorway_ids:
+        warnings.append('schema v2 map contains no detected doorways')
+    for index, doorway in enumerate(doorways):
+        if not isinstance(doorway, dict):
+            continue
+        room = doorway.get('room')
+        if room not in room_ids:
+            errors.append(
+                f'doorways[{index}] refers to unknown room {room!r}'
+            )
+        for field in ('center', 'outside_pose', 'inside_pose'):
+            _check_pose(
+                doorway.get(field),
+                f'doorways[{index}].{field}',
+                errors,
+            )
+        try:
+            width = float(doorway.get('width'))
+            if not math.isfinite(width) or width <= 0.0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append(f'doorways[{index}].width must be positive')
+
     destination_ids = _unique_ids(destinations, 'destination', errors)
     if not destination_ids:
         errors.append('at least one destination is required')
@@ -134,6 +162,19 @@ def validate(document: Dict[str, Any]) -> ValidationResult:
             f'destinations[{index}].pose',
             errors,
         )
+        if document.get('schema_version') == 2:
+            model_pose = destination.get('model_pose')
+            if model_pose is not None:
+                _check_pose(
+                    model_pose,
+                    f'destinations[{index}].model_pose',
+                    errors,
+                )
+            if destination.get('front_source') == 'destination_marker_fallback':
+                warnings.append(
+                    f'destination {destination.get("id", index)!r} has no '
+                    'matched rendered model'
+                )
         room = destination.get('room', '')
         if room and room not in room_ids:
             warnings.append(

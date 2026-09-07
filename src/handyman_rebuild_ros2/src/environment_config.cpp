@@ -185,6 +185,35 @@ bool parseEnvironment(
     return false;
   }
 
+  const YAML::Node routes = root["routes"];
+  if (routes) {
+    if (!routes.IsSequence()) {
+      error = name + ".routes must be a sequence";
+      return false;
+    }
+    for (const auto & item : routes) {
+      if (!item["from"] || !item["to"] || !item["waypoints"] ||
+        !item["waypoints"].IsSequence())
+      {
+        error = name + " has an invalid room route";
+        return false;
+      }
+      RoomRoute route;
+      route.from_room = item["from"].as<std::string>();
+      route.to_room = item["to"].as<std::string>();
+      if (environment.rooms.count(route.from_room) == 0 ||
+        environment.rooms.count(route.to_room) == 0)
+      {
+        error = name + " route references an unknown room";
+        return false;
+      }
+      for (const auto & waypoint : item["waypoints"]) {
+        route.waypoints.push_back(parsePose(waypoint));
+      }
+      environment.routes.push_back(std::move(route));
+    }
+  }
+
   const YAML::Node destinations = root["destinations"];
   if (!destinations || !destinations.IsMap() || destinations.size() == 0) {
     error = name + " has no destinations";
@@ -304,8 +333,19 @@ bool EnvironmentCatalog::resolveTask(HandymanTask & task, std::string & error) c
     candidate_rooms.insert(candidate.room);
   }
   if (candidate_rooms.size() != 1) {
+    // Some competition instructions name only the pickup room and disambiguate a
+    // repeated destination relationally (for example, "the trash box close to
+    // the kettle").  The exported navigation configuration does not yet carry
+    // those object-to-object relations, but a candidate in the explicitly named
+    // pickup room is still unambiguous at room level and is the correct room for
+    // same-room pickup/place tasks.
+    if (candidate_rooms.count(task.pickup_room) != 0) {
+      task.destination_room = task.pickup_room;
+      return true;
+    }
     error = environment->name + "." + task.destination +
-      " is ambiguous; the instruction must include its destination room";
+      " is ambiguous and has no candidate in pickup room " + task.pickup_room +
+      "; the instruction must include its destination room";
     return false;
   }
   task.destination_room = *candidate_rooms.begin();
