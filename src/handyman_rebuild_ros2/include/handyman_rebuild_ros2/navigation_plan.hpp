@@ -21,6 +21,10 @@ struct NavigationCandidate
 class NavigationPlan
 {
 public:
+  static NavigationPlan forSearchPoint(
+    const EnvironmentConfig & environment, const std::string & room,
+    std::size_t index, std::size_t maximum_attempts,
+    const std::optional<Pose2D> & robot_pose = std::nullopt);
   static NavigationPlan forRoom(
     const EnvironmentConfig & environment,
     const std::string & room,

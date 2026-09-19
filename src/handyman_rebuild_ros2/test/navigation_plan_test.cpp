@@ -39,6 +39,22 @@ TEST(NavigationPlan, RoomCandidatesStartAtNearestPoseAndRetryAnotherCandidate)
   EXPECT_TRUE(plan.exhausted());
 }
 
+TEST(NavigationPlan, SearchPointIsFixedAcrossRetries)
+{
+  auto environment = sampleEnvironment();
+  auto plan = NavigationPlan::forSearchPoint(environment, "kitchen", 1, 3);
+  ASSERT_TRUE(plan.valid());
+  do {
+    ASSERT_NE(plan.current(), nullptr);
+    EXPECT_EQ(plan.current()->source_index, 1U);
+    EXPECT_DOUBLE_EQ(plan.current()->pose.x, 4.0);
+  } while (plan.advance());
+  EXPECT_FALSE(NavigationPlan::forSearchPoint(environment, "kitchen", 2, 3).valid());
+  EXPECT_FALSE(NavigationPlan::forSearchPoint(environment, "missing", 0, 3).valid());
+  environment.rooms.at("kitchen").search_points[0].x = 100;
+  EXPECT_FALSE(NavigationPlan::forSearchPoint(environment, "kitchen", 0, 3).valid());
+}
+
 TEST(NavigationPlan, DestinationCandidatesAreFilteredByRoom)
 {
   auto environment = sampleEnvironment();
