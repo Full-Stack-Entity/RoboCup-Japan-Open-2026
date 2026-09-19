@@ -149,6 +149,26 @@ NavigationPlan NavigationPlan::forRoom(
   return {std::move(candidates), maximum_attempts, {}};
 }
 
+NavigationPlan NavigationPlan::forSearchPoint(
+  const EnvironmentConfig & environment, const std::string & room,
+  std::size_t index, std::size_t maximum_attempts,
+  const std::optional<Pose2D> & robot_pose)
+{
+  const auto found = environment.rooms.find(room);
+  if (found == environment.rooms.end() || index >= found->second.search_points.size()) {
+    return {{}, 0, "Unknown search point"};
+  }
+  const auto & pose = found->second.search_points[index];
+  if (!std::isfinite(pose.x) || !std::isfinite(pose.y) || !std::isfinite(pose.yaw) ||
+    !isPoseInsideRoom(found->second, pose))
+  {
+    return {{}, 0, "Invalid search point pose"};
+  }
+  std::vector<NavigationCandidate> candidates{{pose, room, index, {}}};
+  expandRouteCandidates(candidates, routesForTarget(environment, room, robot_pose));
+  return {std::move(candidates), maximum_attempts, {}};
+}
+
 NavigationPlan NavigationPlan::forDestination(
   const EnvironmentConfig & environment,
   const std::string & destination,

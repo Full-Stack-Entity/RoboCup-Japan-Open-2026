@@ -1,4 +1,32 @@
 #include "sigverse_ros_bridge.hpp"
+#include <chrono>
+#include <iomanip>
+#include <mutex>
+
+namespace {
+struct ImageAudit {
+  uint64_t received{0}, started{0}, completed{0}, bson_bytes{0};
+  std::chrono::steady_clock::time_point last_log{};
+};
+std::mutex image_audit_mutex;
+void log_image_audit(const char * phase, int fd, pid_t tid,
+  const std::string & topic, const ImageAudit & audit,
+  const sensor_msgs::msg::Image & image, size_t binary_bytes,
+  size_t subscribers, double publish_ms)
+{
+  std::ostringstream line;
+  line << "HANDYMAN_IMAGE_AUDIT phase=" << phase
+       << " fd=" << fd << " tid=" << tid << " topic=" << std::quoted(topic)
+       << " received=" << audit.received << " started=" << audit.started
+       << " completed=" << audit.completed << " bson_bytes=" << audit.bson_bytes
+       << " width=" << image.width << " height=" << image.height
+       << " step=" << image.step << " encoding=" << std::quoted(image.encoding)
+       << " binary_bytes=" << binary_bytes << " data_bytes=" << image.data.size()
+       << " subscribers=" << subscribers << " publish_ms=" << publish_ms;
+  std::lock_guard<std::mutex> lock(image_audit_mutex);
+  std::cout << line.str() << std::endl;
+}
+}  // namespace
 
 int  SIGVerseROSBridge::syncTimeCnt;
 int  SIGVerseROSBridge::syncTimeMaxNum;
@@ -81,6 +109,9 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
   std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr> cameraInfoPublisherMap;
   std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> imagePublisherMap;
   std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr> laserScanPublisherMap;
+  const char * audit_setting = std::getenv("HANDYMAN_IMAGE_AUDIT");
+  const bool audit_images = audit_setting && std::string(audit_setting) == "1";
+  std::map<std::string, ImageAudit> image_audits;
 
   std::cout << "Socket open. tid=" << get_tid() << std::endl;
 
@@ -261,6 +292,9 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
     // Image
     else if(typeValue==TYPE_IMAGE)
     {
+      // Reached only after the complete BSON document and type/topic were read.
+      ImageAudit * audit = audit_images ? &image_audits[topicValue] : nullptr;
+      if (audit) { ++audit->received; audit->bson_bytes += msgSize; }
       sensor_msgs::msg::Image image;
 
       // Always use wall-clock time
@@ -276,7 +310,31 @@ void * SIGVerseROSBridge::receiving_thread(void *param)
       image.data.resize(sizet);
       memcpy(&image.data[0], bsonView["msg"]["data"].get_binary().bytes, sizet);
 
+      bool emit_audit = false;
+      std::chrono::steady_clock::time_point publish_start;
+      if (audit) {
+        publish_start = std::chrono::steady_clock::now();
+        emit_audit = audit->received <= 3 ||
+          std::chrono::duration<double>(publish_start - audit->last_log).count() >= 1.0;
+        ++audit->started;
+        if (emit_audit) {
+          audit->last_log = publish_start;
+          log_image_audit("before_publish", dstSocket, get_tid(), topicValue, *audit,
+            image, bsonView["msg"]["data"].get_binary().size,
+            imagePublisherMap[topicValue]->get_subscription_count(), 0.0);
+        }
+      }
       imagePublisherMap[topicValue]->publish(image);
+      if (audit) {
+        ++audit->completed;
+        if (emit_audit) {
+          const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - publish_start).count();
+          log_image_audit("after_publish", dstSocket, get_tid(), topicValue, *audit,
+            image, bsonView["msg"]["data"].get_binary().size,
+            imagePublisherMap[topicValue]->get_subscription_count(), ms);
+        }
+      }
     }
     // LaserScan
     else if(typeValue==TYPE_LASER_SCAN)
@@ -470,4 +528,3 @@ int main(int argc, char **argv)
 
   rclcpp::shutdown();
 };
-

@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <map>
 
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <nav2_msgs/srv/clear_entire_costmap.hpp>
@@ -16,6 +17,7 @@
 
 #include "handyman_rebuild_ros2/environment_config.hpp"
 #include "handyman_rebuild_ros2/navigation_plan.hpp"
+#include "handyman_rebuild_ros2/deferred_navigation_client.hpp"
 
 namespace handyman_rebuild_ros2
 {
@@ -24,6 +26,7 @@ enum class NavigationTarget
 {
   kRoom,
   kDestination,
+  kSearchPoint,
 };
 
 struct NavigationOutcome
@@ -51,6 +54,13 @@ class NavigationExecutor
 {
 public:
   using CompletionCallback = std::function<void(const NavigationOutcome &)>;
+  // Called only for an accepted FINAL search-point goal, never route waypoints.
+  // Consumer must not reenter this executor from the callback.
+  using SearchGoalCallback = std::function<void(
+    const rclcpp_action::GoalUUID &, std::uint64_t, const NavigationCandidate &)>;
+  bool navigateToSearchPoint(
+    const std::string & environment, const std::string & room, std::size_t index,
+    SearchGoalCallback accepted, CompletionCallback completion);
 
   NavigationExecutor(
     rclcpp::Node * node,
@@ -69,6 +79,21 @@ public:
     CompletionCallback completion);
 
   void cancel();
+  // Permanently seal this executor against new dispatch and cancel all owned goals.
+  // Poll only from the same single-threaded callback context as navigation methods.
+  void sealAndCancel();
+  std::string cancellationDrainState() const;
+  using CancellationCallback = std::function<void(const rclcpp_action::GoalUUID &, const std::string &)>;
+  void setCancellationObserver(CancellationCallback callback);
+  // Reports every accepted search action, including route waypoints and stale
+  // late acceptance. One owner/task per observer lifetime; do not reenter here.
+  using OwnedGoalCallback = std::function<void(const rclcpp_action::GoalUUID &,
+    std::uint64_t, const Pose2D &, bool)>;
+  void setOwnedGoalObserver(OwnedGoalCallback callback) { owned_goal_callback_ = std::move(callback); }
+  using DispatchIntentCallback = std::function<void(const rclcpp_action::GoalUUID &,
+    std::uint64_t,const Pose2D &,bool,DeferredNavigationClient::Decision)>;
+  void setDispatchIntentObserver(DispatchIntentCallback callback) {dispatch_intent_callback_=std::move(callback);}
+  void setRejectedGoalObserver(OwnedGoalCallback callback) {rejected_goal_callback_=std::move(callback);}
   bool active() const noexcept;
 
 private:
@@ -89,11 +114,22 @@ private:
   void clearCostmaps();
   std::optional<Pose2D> lookupRobotPose() const;
   void cancelTimers();
+  void cancelGoalTracked(const GoalHandle::SharedPtr & handle);
+  CancellationCallback cancellation_callback_;
+  std::map<rclcpp_action::GoalUUID, std::chrono::steady_clock::time_point> cancelling_goals_;
+  rclcpp::TimerBase::SharedPtr cancellation_timer_;
+  std::size_t pending_goal_responses_{0};
+  std::map<rclcpp_action::GoalUUID, GoalHandle::SharedPtr> owned_goals_;
+  bool sealed_{false};
+  bool cancellation_fault_{false};
+  OwnedGoalCallback owned_goal_callback_;
+  OwnedGoalCallback rejected_goal_callback_;
+  DispatchIntentCallback dispatch_intent_callback_;
 
   rclcpp::Node * node_;
   const EnvironmentCatalog * catalog_;
   NavigationSettings settings_;
-  rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
+  std::shared_ptr<DeferredNavigationClient> action_client_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_costmap_;
   mutable tf2_ros::Buffer tf_buffer_;
@@ -102,6 +138,7 @@ private:
   const EnvironmentConfig * environment_{nullptr};
   NavigationTarget target_{NavigationTarget::kRoom};
   CompletionCallback completion_;
+  SearchGoalCallback search_goal_callback_;
   GoalHandle::SharedPtr goal_handle_;
   rclcpp::TimerBase::SharedPtr server_timer_;
   rclcpp::TimerBase::SharedPtr goal_timer_;

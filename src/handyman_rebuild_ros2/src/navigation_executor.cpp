@@ -18,7 +18,7 @@ NavigationExecutor::NavigationExecutor(
 : node_(node),
   catalog_(catalog),
   settings_(std::move(settings)),
-  action_client_(rclcpp_action::create_client<NavigateToPose>(node, settings_.action_name)),
+  action_client_(DeferredNavigationClient::create(node, settings_.action_name)),
   clear_global_costmap_(node->create_client<nav2_msgs::srv::ClearEntireCostmap>(
       "/global_costmap/clear_entirely_global_costmap")),
   clear_local_costmap_(node->create_client<nav2_msgs::srv::ClearEntireCostmap>(
@@ -33,6 +33,7 @@ bool NavigationExecutor::navigateToRoom(
   const std::string & room,
   CompletionCallback completion)
 {
+  if (sealed_) return false;
   const EnvironmentConfig * config = catalog_ == nullptr ? nullptr : catalog_->find(environment);
   if (config == nullptr) {
     return false;
@@ -76,12 +77,31 @@ bool NavigationExecutor::navigateToDestination(
     std::move(completion));
 }
 
+bool NavigationExecutor::navigateToSearchPoint(
+  const std::string & environment, const std::string & room, std::size_t index,
+  SearchGoalCallback accepted, CompletionCallback completion)
+{
+  const auto * config = catalog_ == nullptr ? nullptr : catalog_->find(environment);
+  if (config == nullptr || !accepted) {
+    return false;
+  }
+  // begin may submit asynchronously; callbacks run after this method returns.
+  const bool started = begin(*config,
+    NavigationPlan::forSearchPoint(*config, room, index, settings_.maximum_attempts,
+      lookupRobotPose()), NavigationTarget::kSearchPoint, std::move(completion));
+  if (started) {
+    search_goal_callback_ = std::move(accepted);
+  }
+  return started;
+}
+
 bool NavigationExecutor::begin(
   const EnvironmentConfig & environment,
   NavigationPlan plan,
   NavigationTarget target,
   CompletionCallback completion)
 {
+  if (sealed_) return false;
   cancel();
   if (!plan.valid()) {
     RCLCPP_ERROR(node_->get_logger(), "Cannot create navigation plan: %s", plan.error().c_str());
@@ -124,6 +144,7 @@ void NavigationExecutor::waitForServer()
 
 void NavigationExecutor::sendCurrentGoal()
 {
+  if (sealed_ || !active()) return;
   const NavigationCandidate * candidate = plan_ ? plan_->current() : nullptr;
   if (candidate == nullptr) {
     finish(false, "Navigation plan has no remaining candidate");
@@ -143,8 +164,30 @@ void NavigationExecutor::sendCurrentGoal()
   goal.pose.pose.orientation = tf2::toMsg(orientation);
 
   typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
-  options.goal_response_callback = [this, token](const GoalHandle::SharedPtr & handle) {
+  const bool search_owned = target_ == NavigationTarget::kSearchPoint;
+  auto identity=std::make_shared<rclcpp_action::GoalUUID>();
+  action_client_->before_send=[this,token,target_pose,is_route_waypoint,search_owned,identity](const auto & id,auto decide) {
+    *identity=id;
+    if (search_owned && dispatch_intent_callback_) {
+      dispatch_intent_callback_(id,token,target_pose,is_route_waypoint,
+        [this,token,decide](bool permit) {decide(permit && !sealed_ && active() && token==generation_);});
+    } else decide(true);
+  };
+  options.goal_response_callback = [this, token, is_route_waypoint, target_pose, search_owned,identity](const GoalHandle::SharedPtr & handle) {
+      --pending_goal_responses_;
+      if (!handle && search_owned && rejected_goal_callback_) {
+        rejected_goal_callback_(*identity,token,target_pose,is_route_waypoint);
+      }
+      if (handle) owned_goals_[handle->get_goal_id()] = handle;
+      if (handle && search_owned && owned_goal_callback_) {
+        owned_goal_callback_(handle->get_goal_id(), token, target_pose, is_route_waypoint);
+      }
       if (!active() || token != generation_) {
+        // A cancellation may precede the action acceptance response. Retire that
+        // exact late goal; never cancel unrelated goals on the server.
+        if (handle) {
+          cancelGoalTracked(handle);
+        }
         return;
       }
       if (!handle) {
@@ -152,6 +195,11 @@ void NavigationExecutor::sendCurrentGoal()
         return;
       }
       goal_handle_ = handle;
+      if (target_ == NavigationTarget::kSearchPoint && !is_route_waypoint &&
+        search_goal_callback_ && plan_ && plan_->current())
+      {
+        search_goal_callback_(handle->get_goal_id(), token, *plan_->current());
+      }
     };
   options.feedback_callback = [this, token](
     GoalHandle::SharedPtr,
@@ -164,6 +212,12 @@ void NavigationExecutor::sendCurrentGoal()
       }
     };
   options.result_callback = [this, token](const GoalHandle::WrappedResult & result) {
+      owned_goals_.erase(result.goal_id);
+      if (cancelling_goals_.erase(result.goal_id) && cancellation_callback_) {
+        if (result.code != rclcpp_action::ResultCode::CANCELED) cancellation_fault_ = true;
+        cancellation_callback_(result.goal_id,
+          result.code == rclcpp_action::ResultCode::CANCELED ? "cancel_confirmed" : "goal_ended_otherwise");
+      }
       if (!active() || token != generation_) {
         return;
       }
@@ -200,6 +254,7 @@ void NavigationExecutor::sendCurrentGoal()
     is_route_waypoint ? "via waypoint" : "to candidate",
     is_route_waypoint ? route_waypoint_index_ + 1 : candidate->source_index,
     target_pose.x, target_pose.y, target_pose.yaw);
+  ++pending_goal_responses_;
   action_client_->async_send_goal(goal, options);
   const auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
     std::chrono::duration<double>(settings_.goal_timeout_sec));
@@ -208,9 +263,12 @@ void NavigationExecutor::sendCurrentGoal()
         return;
       }
       if (goal_handle_) {
-        action_client_->async_cancel_goal(goal_handle_);
+        cancelGoalTracked(goal_handle_);
       } else {
-        action_client_->async_cancel_all_goals();
+        // Acceptance can still be in flight. Seal and cancel exact late handles;
+        // never cancel unrelated goals merely because our handle is unavailable.
+        sealAndCancel();
+        return;
       }
       failAttempt(token, "Navigation goal timed out");
     });
@@ -264,6 +322,14 @@ void NavigationExecutor::verifyResult(std::uint64_t token)
     settings_.destination_tolerance_m)
   {
     failAttempt(token, "Robot stopped too far from the destination candidate");
+    return;
+  }
+  if (target_ == NavigationTarget::kSearchPoint &&
+    (std::hypot(robot_pose->x - candidate->pose.x, robot_pose->y - candidate->pose.y) > 0.15 ||
+    std::abs(std::atan2(std::sin(robot_pose->yaw - candidate->pose.yaw),
+    std::cos(robot_pose->yaw - candidate->pose.yaw))) > 0.17453292519943295))
+  {
+    failAttempt(token, "Robot stopped outside search-point tolerance");
     return;
   }
   finish(true, "Navigation and region verification succeeded", *robot_pose);
@@ -332,6 +398,7 @@ void NavigationExecutor::finish(
   outcome.robot_pose = pose;
   outcome.reason = reason;
   auto completion = std::move(completion_);
+  search_goal_callback_ = {};
   ++generation_;
   cancelTimers();
   goal_handle_.reset();
@@ -356,8 +423,9 @@ void NavigationExecutor::cancelTimers()
 void NavigationExecutor::cancel()
 {
   ++generation_;
+  action_client_->discardPending();
   if (goal_handle_) {
-    action_client_->async_cancel_goal(goal_handle_);
+    cancelGoalTracked(goal_handle_);
   }
   cancelTimers();
   goal_handle_.reset();
@@ -365,8 +433,74 @@ void NavigationExecutor::cancel()
   environment_ = nullptr;
   route_waypoint_index_ = 0;
   completion_ = {};
+  search_goal_callback_ = {};
 }
 
 bool NavigationExecutor::active() const noexcept {return plan_.has_value();}
+
+void NavigationExecutor::sealAndCancel()
+{
+  sealed_ = true;
+  cancel();
+  action_client_->seal();
+  // Includes older accepted goals whose timeout/retry detached goal_handle_.
+  for (const auto & entry : owned_goals_) cancelGoalTracked(entry.second);
+}
+
+std::string NavigationExecutor::cancellationDrainState() const
+{
+  if (cancellation_fault_) return "cancel_failed";
+  if (!sealed_ || active() || pending_goal_responses_ || !owned_goals_.empty() ||
+    !cancelling_goals_.empty()) return "cancel_received";
+  return "cancel_drained";
+}
+
+void NavigationExecutor::setCancellationObserver(CancellationCallback callback)
+{
+  cancellation_callback_ = std::move(callback);
+}
+
+void NavigationExecutor::cancelGoalTracked(const GoalHandle::SharedPtr & handle)
+{
+  const auto id = handle->get_goal_id();
+  if (!cancellation_callback_) {
+    action_client_->async_cancel_goal(handle);
+    return;
+  }
+  if (cancelling_goals_.count(id)) return;
+  cancelling_goals_[id] = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  cancellation_callback_(id, "cancel_requested");
+  action_client_->async_cancel_goal(handle,
+    [this,id](action_msgs::srv::CancelGoal::Response::SharedPtr response) {
+      if (!cancelling_goals_.count(id) || !cancellation_callback_) return;
+      bool accepted = response && response->return_code == 0;
+      bool matching = false;
+      if (response) for (const auto & goal : response->goals_canceling) {
+        if (goal.goal_id.uuid == id) matching = true;
+      }
+      if (accepted && matching) {
+        cancellation_callback_(id, "cancel_accepted_waiting_terminal");
+      } else {
+        cancellation_fault_ = true;
+        cancelling_goals_.erase(id);
+        cancellation_callback_(id, "cancel_rejected_or_not_acknowledged");
+      }
+    });
+  if (!cancellation_timer_) {
+    cancellation_timer_ = node_->create_wall_timer(std::chrono::milliseconds(50), [this]() {
+      const auto now = std::chrono::steady_clock::now();
+      for (auto it = cancelling_goals_.begin(); it != cancelling_goals_.end();) {
+        if (now >= it->second) {
+          cancellation_fault_ = true;
+          auto id = it->first;
+          it = cancelling_goals_.erase(it);
+          if (cancellation_callback_) cancellation_callback_(id, "cancel_confirmation_timeout");
+        } else {
+          ++it;
+        }
+      }
+    });
+  }
+}
 
 }  // namespace handyman_rebuild_ros2

@@ -66,6 +66,9 @@ target_include_directories(handyman_nodes PUBLIC
 )
 
 add_executable(handyman_coordinator src/coordinator_main.cpp)
+add_executable(handyman_search_worker src/search_worker_main.cpp)
+target_link_libraries(handyman_search_worker handyman_nodes)
+ament_target_dependencies(handyman_search_worker rclcpp)
 target_link_libraries(handyman_coordinator handyman_nodes)
 ament_target_dependencies(handyman_coordinator rclcpp)
 
@@ -94,6 +97,7 @@ install(TARGETS
   handyman_core
   handyman_nodes
   handyman_coordinator
+  handyman_search_worker
   handyman_simulated_moderator
   handyman_phase1_simulation
   handyman_initial_pose_localizer
